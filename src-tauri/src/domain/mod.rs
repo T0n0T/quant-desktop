@@ -19,6 +19,9 @@ pub struct Quote {
     pub turnover: f64,
     pub turnover_rate: Option<f64>,
     pub timestamp: i64,
+    /// Yahoo quote session: pre, regular, post, overnight, or closed. Other sources use regular.
+    #[serde(default)]
+    pub market_phase: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

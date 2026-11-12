@@ -8,7 +8,7 @@ import { useQuoteStore } from '@/stores/quote';
 import { useWatchlistStore } from '@/stores/watchlist';
 import { useSettingsStore } from '@/stores/settings';
 import { useTickerWindowHeight } from '@/composables/useTickerWindowHeight';
-import { formatQuotePrice } from '@/utils/format';
+import { formatMarketPhase, formatQuotePrice } from '@/utils/format';
 import { nextPageStart, windowItems } from '@/utils/paging';
 
 const quoteStore = useQuoteStore();
@@ -171,6 +171,7 @@ const tickerItems = computed(() =>
       market: item.market,
       price: q?.price ?? null,
       changePct: q?.change_pct ?? null,
+      phase: q?.market_phase ?? null,
     };
   })
 );
@@ -359,6 +360,11 @@ async function handleClick(event: MouseEvent | KeyboardEvent) {
         <div v-for="item in visibleItems" :key="item.code" class="ticker-row">
           <span class="ticker-name">{{ item.name }}</span>
           <span
+            v-if="(item.market === 'US' || item.market === 'HK') && item.phase && item.phase !== 'regular'"
+            class="ticker-phase"
+            :class="`phase-${item.phase}`"
+          >{{ formatMarketPhase(item.phase, item.market) }}</span>
+          <span
             v-if="item.price !== null"
             class="ticker-price tabular-nums"
             :class="item.changePct !== null && item.changePct >= 0 ? 'up' : 'down'"
@@ -430,6 +436,20 @@ async function handleClick(event: MouseEvent | KeyboardEvent) {
   text-align: right;
   color: var(--color-text-primary);
 }
+.ticker-phase {
+  flex-shrink: 0;
+  max-width: 58px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-tertiary);
+  font-size: 9px;
+}
+.ticker-phase.phase-pre,
+.ticker-phase.phase-post,
+.ticker-phase.phase-pre_no_data,
+.ticker-phase.phase-post_no_data { color: var(--color-info, #4da3ff); }
+.ticker-phase.phase-overnight { color: var(--color-warning); }
 .ticker-na {
   flex-shrink: 0;
   color: var(--color-text-tertiary);

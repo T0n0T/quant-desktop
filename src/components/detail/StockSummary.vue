@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import type { Quote } from '@/types';
-import { formatQuoteAmount, formatQuotePrice, formatQuoteVolume } from '@/utils/format';
+import { formatMarketPhase, formatQuoteAmount, formatQuotePrice, formatQuoteVolume } from '@/utils/format';
 
 const props = defineProps<{
   quote: Quote;
@@ -13,10 +13,12 @@ const items = computed(() => [
   { label: '最低', value: formatQuotePrice(props.quote.low, props.quote.market) },
   { label: '成交量', value: formatQuoteVolume(props.quote.volume, props.quote.market) },
   { label: '成交额', value: formatQuoteAmount(props.quote.turnover, props.quote.market) },
-  {
-    label: '换手率',
-    value: props.quote.turnover_rate != null ? props.quote.turnover_rate.toFixed(2) + '%' : '--'
-  },
+  props.quote.market === 'US' || props.quote.market === 'HK'
+    ? { label: '交易时段', value: formatMarketPhase(props.quote.market_phase, props.quote.market) }
+    : {
+      label: '换手率',
+      value: props.quote.turnover_rate != null ? props.quote.turnover_rate.toFixed(2) + '%' : '--'
+    },
 ]);
 </script>
 

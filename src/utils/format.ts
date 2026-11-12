@@ -100,6 +100,22 @@ export function formatQuoteAmount(amount: number | null | undefined, market: str
   return `${currencyPrefix(market)}${unit}`;
 }
 
+/** 报价所属交易时段。夜盘没有 ATS 实时源时，明确提示数据不可用。 */
+export function formatMarketPhase(phase: string | null | undefined, market: string): string {
+  if (market === 'US' || market === 'HK') {
+    switch (phase) {
+      case 'pre': return '盘前';
+      case 'pre_no_data': return '盘前暂无报价';
+      case 'post': return '盘后';
+      case 'post_no_data': return '盘后暂无报价';
+      case 'overnight': return '夜盘无实时数据';
+      case 'closed': return '已收盘';
+      default: return '正常交易';
+    }
+  }
+  return '正常交易';
+}
+
 /**
  * 报价显示精度 —— 按**标的类别**而不是数值决定。
  *

@@ -273,23 +273,51 @@ pub async fn search_stocks(
     keyword: String,
 ) -> Result<Vec<crate::domain::StockBrief>, String> {
     let mut results = crate::datasource::search::search_cn(manager.inner().as_ref(), &keyword).await;
-    if let Some(source) = manager.get_source("yahoo_tdx") {
-        match source.search(&keyword, "ALL").await {
-            Ok(foreign) => {
-                let mut seen: std::collections::HashSet<(String, String)> = results
-                    .iter()
-                    .map(|item| (item.market.clone(), item.code.clone()))
-                    .collect();
-                for item in foreign {
-                    if seen.insert((item.market.clone(), item.code.clone())) {
-                        results.push(item);
-                    }
+    let mut seen: std::collections::HashSet<(String, String)> = results
+        .iter()
+        .map(|item| (item.market.clone(), item.code.clone()))
+        .collect();
+
+    // Tencent carries Chinese aliases for a useful subset of HK/US symbols
+    // (for example 建滔积层板/01888.HK and 苹果/AAPL). Keep those names when
+    // Yahoo returns the same instrument with an English long name.
+    let tencent_search = crate::datasource::search::tencent_foreign_suggest_search(&keyword);
+    let yahoo_search = async {
+        if let Some(source) = manager.get_source("yahoo_tdx") {
+            source.search(&keyword, "ALL").await
+        } else {
+            Ok(vec![])
+        }
+    };
+    let (tencent, yahoo) = tokio::join!(tencent_search, yahoo_search);
+
+    match tencent {
+        Ok(foreign) => {
+            for item in foreign {
+                if seen.insert((item.market.clone(), item.code.clone())) {
+                    results.push(item);
                 }
             }
-            Err(error) => crate::logging::warn_throttled("watchlist.search.yahoo", || {
-                format!("Yahoo stock search unavailable: {}", error)
-            }),
         }
+        Err(error) => crate::logging::warn_throttled("watchlist.search.tencent_foreign", || {
+            format!("Tencent foreign stock search unavailable: {}", error)
+        }),
     }
+
+    match yahoo {
+        Ok(foreign) => {
+            for item in foreign {
+                if seen.insert((item.market.clone(), item.code.clone())) {
+                    results.push(item);
+                }
+            }
+        }
+        Err(error) => crate::logging::warn_throttled("watchlist.search.yahoo", || {
+            format!("Yahoo stock search unavailable: {}", error)
+        }),
+    }
+    // Keep the interactive result contract bounded even when both providers
+    // return their own 20-row pages.
+    results.truncate(20);
     Ok(results)
 }

@@ -6,7 +6,7 @@
 //! selectable from the existing settings UI without requiring Python.
 
 use async_trait::async_trait;
-use chrono::{DateTime, FixedOffset, NaiveDate, TimeZone, Utc};
+use chrono::{DateTime, Datelike, FixedOffset, NaiveDate, TimeZone, Timelike, Utc, Weekday};
 use chrono_tz::Tz;
 use reqwest::Client;
 use serde_json::Value;
@@ -114,16 +114,18 @@ fn yahoo_symbol(code: &str, market: &str) -> Option<String> {
     let code = code.trim().to_ascii_uppercase();
     match market.trim().to_ascii_uppercase().as_str() {
         "HK" => {
-            if code.ends_with(".HK") {
-                Some(code)
-            } else {
-                let digits = code.strip_prefix("HK").unwrap_or(&code);
-                if digits.chars().all(|c| c.is_ascii_digit()) {
-                    Some(format!("{:0>4}.HK", digits))
-                } else {
-                    Some(format!("{}.HK", digits))
-                }
+            let digits = code
+                .strip_suffix(".HK")
+                .or_else(|| code.strip_prefix("HK"))
+                .unwrap_or(&code);
+            if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+                return None;
             }
+            let significant = digits.trim_start_matches('0');
+            Some(format!(
+                "{:0>4}.HK",
+                if significant.is_empty() { "0" } else { significant }
+            ))
         }
         "US" => Some(code.strip_suffix(".US").unwrap_or(&code).to_string()),
         _ => None,
@@ -135,6 +137,9 @@ fn yahoo_search_query(keyword: &str) -> String {
     let upper = trimmed.to_ascii_uppercase();
     if let Some(code) = upper.strip_suffix(".US") {
         return code.to_string();
+    }
+    if upper.ends_with(".HK") {
+        return yahoo_symbol(&upper, "HK").unwrap_or(upper);
     }
 
     let hk_code = upper.strip_prefix("HK").unwrap_or(&upper);
@@ -180,6 +185,109 @@ fn number_at(row: &Value, field: &str, index: usize) -> Option<f64> {
 
 fn meta_number(meta: &Value, field: &str) -> Option<f64> {
     meta.get(field).and_then(Value::as_f64)
+}
+
+fn yahoo_market_phase_at(meta: &Value, market: &str, now: i64) -> &'static str {
+    let is_us = market.eq_ignore_ascii_case("US");
+    let is_hk = market.eq_ignore_ascii_case("HK");
+    if !is_us && !is_hk {
+        return "regular";
+    }
+    for phase in ["pre", "regular", "post"] {
+        let period = meta.pointer(&format!("/currentTradingPeriod/{phase}"));
+        let start = period.and_then(|value| value.get("start")).and_then(Value::as_i64);
+        let end = period.and_then(|value| value.get("end")).and_then(Value::as_i64);
+        if matches!((start, end), (Some(start), Some(end)) if now >= start && now < end) {
+            return phase;
+        }
+    }
+    let timezone = local_timezone(meta, market);
+    if let Some(utc) = DateTime::<Utc>::from_timestamp(now, 0) {
+        let local = utc.with_timezone(&timezone);
+        let hour = local.hour();
+        let weekday = local.weekday();
+        let is_weekday = !matches!(weekday, Weekday::Sat | Weekday::Sun);
+        if is_us {
+            if is_weekday {
+                let total_minutes = hour * 60 + local.minute();
+                if (4 * 60..9 * 60 + 30).contains(&total_minutes) {
+                    return "pre";
+                }
+                if (9 * 60 + 30..16 * 60).contains(&total_minutes) {
+                    return "regular";
+                }
+                if (16 * 60..20 * 60).contains(&total_minutes) {
+                    return "post";
+                }
+            }
+            let overnight = match weekday {
+                Weekday::Sun => hour >= 20,
+                Weekday::Mon | Weekday::Tue | Weekday::Wed | Weekday::Thu => {
+                    hour < 4 || hour >= 20
+                }
+                Weekday::Fri => hour < 4,
+                Weekday::Sat => false,
+            };
+            if overnight {
+                return "overnight";
+            }
+        } else {
+            let minute = local.minute();
+            if is_weekday {
+                if hour == 9 && minute < 30 {
+                    return "pre";
+                }
+                if ((hour > 9 || (hour == 9 && minute >= 30)) && hour < 12)
+                    || (hour >= 13 && hour < 16)
+                {
+                    return "regular";
+                }
+                if hour == 16 && minute < 10 {
+                    return "post";
+                }
+            }
+        }
+    }
+    "closed"
+}
+
+fn positive_meta_number(meta: &Value, field: &str) -> Option<f64> {
+    meta_number(meta, field).filter(|value| *value > 0.0)
+}
+
+fn timestamp_in_period(meta: &Value, phase: &str, timestamp: i64) -> bool {
+    let Some(period) = meta.pointer(&format!("/currentTradingPeriod/{phase}")) else {
+        return false;
+    };
+    let start = period.get("start").and_then(Value::as_i64);
+    let end = period.get("end").and_then(Value::as_i64);
+    matches!((start, end), (Some(start), Some(end)) if timestamp >= start && timestamp < end)
+}
+
+fn current_period_market_time(meta: &Value, phase: &str, timestamps: &[Value], now: i64) -> Option<i64> {
+    let field = match phase {
+        "pre" => "preMarketTime",
+        "post" => "postMarketTime",
+        _ => return None,
+    };
+    meta.get(field)
+        .and_then(Value::as_i64)
+        .filter(|timestamp| {
+            *timestamp <= now
+                && now - timestamp <= 5 * 60
+                && timestamp_in_period(meta, phase, *timestamp)
+        })
+        .or_else(|| {
+            timestamps
+                .iter()
+                .filter_map(Value::as_i64)
+                .filter(|timestamp| {
+                    *timestamp <= now
+                        && now - timestamp <= 5 * 60
+                        && timestamp_in_period(meta, phase, *timestamp)
+                })
+                .max()
+        })
 }
 
 fn parse_yahoo_chart(
@@ -257,15 +365,60 @@ fn parse_yahoo_chart(
     }
 
     let last_bar = bars.last();
-    let price = meta_number(meta, "regularMarketPrice")
+    let now = Utc::now().timestamp();
+    let session = yahoo_market_phase_at(meta, market, now);
+    let phase_price_field = match session {
+        "pre" => "preMarketPrice",
+        "post" => "postMarketPrice",
+        _ => "regularMarketPrice",
+    };
+    let live_phase_time = if matches!(session, "pre" | "post") {
+        current_period_market_time(meta, session, &timestamps, now)
+    } else {
+        None
+    };
+    let live_phase_price = if live_phase_time.is_some() {
+        positive_meta_number(meta, phase_price_field)
+    } else {
+        None
+    };
+    let has_extended_quote = live_phase_price.is_some() && live_phase_time.is_some();
+    let phase = match (session, has_extended_quote) {
+        ("pre", false) => "pre_no_data",
+        ("post", false) => "post_no_data",
+        (phase, _) => phase,
+    };
+    let (change_field, change_pct_field, volume_field, time_field) = match phase {
+        "pre" => (
+            "preMarketChange",
+            "preMarketChangePercent",
+            "preMarketVolume",
+            "preMarketTime",
+        ),
+        "post" => (
+            "postMarketChange",
+            "postMarketChangePercent",
+            "postMarketVolume",
+            "postMarketTime",
+        ),
+        _ => (
+            "regularMarketChange",
+            "regularMarketChangePercent",
+            "regularMarketVolume",
+            "regularMarketTime",
+        ),
+    };
+    let price = live_phase_price
+        .or_else(|| positive_meta_number(meta, "regularMarketPrice"))
         .or_else(|| last_bar.map(|bar| bar.close))
         .unwrap_or(0.0);
     let previous_close = meta_number(meta, "chartPreviousClose")
         .or_else(|| meta_number(meta, "previousClose"))
         .unwrap_or(0.0);
     let volume = meta
-        .get("regularMarketVolume")
+        .get(volume_field)
         .and_then(Value::as_u64)
+        .or_else(|| meta.get("regularMarketVolume").and_then(Value::as_u64))
         .or_else(|| last_bar.map(|bar| bar.volume))
         .unwrap_or(0);
     let name = meta
@@ -274,16 +427,23 @@ fn parse_yahoo_chart(
         .and_then(Value::as_str)
         .unwrap_or(symbol)
         .to_string();
-    let timestamp = meta
-        .get("regularMarketTime")
-        .and_then(Value::as_i64)
-        .unwrap_or_else(|| Utc::now().timestamp());
-    let change = price - previous_close;
-    let change_pct = if previous_close > 0.0 {
-        change / previous_close * 100.0
+    let quote_phase_time = if has_extended_quote {
+        live_phase_time
     } else {
-        0.0
+        None
     };
+    let timestamp = quote_phase_time
+        .or_else(|| meta.get(time_field).and_then(Value::as_i64))
+        .or_else(|| meta.get("regularMarketTime").and_then(Value::as_i64))
+        .unwrap_or_else(|| Utc::now().timestamp());
+    let change = meta_number(meta, change_field).unwrap_or(price - previous_close);
+    let change_pct = meta_number(meta, change_pct_field).unwrap_or_else(|| {
+        if previous_close > 0.0 {
+            change / previous_close * 100.0
+        } else {
+            0.0
+        }
+    });
 
     Ok(YahooChartData {
         quote: Quote {
@@ -308,6 +468,7 @@ fn parse_yahoo_chart(
             turnover: price * volume as f64,
             turnover_rate: None,
             timestamp,
+            market_phase: phase.to_string(),
         },
         bars,
         minutes,
@@ -357,6 +518,7 @@ fn tdx_quote_to_domain(q: &tdxrs::protocol::types::SecurityQuote) -> Quote {
         turnover: q.amount.max(0.0),
         turnover_rate: None,
         timestamp: Utc::now().timestamp(),
+        market_phase: "regular".to_string(),
     }
 }
 
@@ -465,13 +627,14 @@ impl YahooTdxAdapter {
         interval: &str,
         period1: Option<i64>,
         period2: Option<i64>,
+        include_pre_post: bool,
     ) -> Result<Value, AppError> {
         let mut request = self
             .yahoo_client()
             .get(format!("{}/{}", YAHOO_CHART_URL, symbol))
             .query(&[
                 ("interval", interval),
-                ("includePrePost", "false"),
+                ("includePrePost", if include_pre_post { "true" } else { "false" }),
                 ("events", "div,splits"),
             ]);
         if let Some(range) = range {
@@ -503,7 +666,7 @@ impl YahooTdxAdapter {
         let symbol = yahoo_symbol(code, market)
             .ok_or_else(|| AppError::Unsupported(format!("不支持的市场: {market}")))?;
         let response = self
-            .yahoo_chart(&symbol, Some("1d"), "1m", None, None)
+            .yahoo_chart(&symbol, Some("1d"), "1m", None, None, true)
             .await?;
         let mut quote = parse_yahoo_chart(&response, &symbol, market, true)?.quote;
         quote.code = code.to_string();
@@ -738,7 +901,7 @@ impl YahooTdxAdapter {
             (Some(period1), Some(period2))
         };
         let response = self
-            .yahoo_chart(&symbol, range, interval, period1, period2)
+            .yahoo_chart(&symbol, range, interval, period1, period2, false)
             .await?;
         let mut bars = parse_yahoo_chart(&response, &symbol, market, intraday)?.bars;
         if let Some(end_date) = end_date {
@@ -936,7 +1099,7 @@ impl DataSource for YahooTdxAdapter {
                 let symbol = yahoo_symbol(code, market)
                     .ok_or_else(|| AppError::Unsupported(format!("不支持的市场: {market}")))?;
                 let response = self
-                    .yahoo_chart(&symbol, Some("5d"), "1m", None, None)
+                    .yahoo_chart(&symbol, Some("5d"), "1m", None, None, false)
                     .await?;
                 Ok(parse_yahoo_chart(&response, &symbol, market, true)?.minutes)
             }
@@ -977,9 +1140,9 @@ impl DataSource for YahooTdxAdapter {
 #[cfg(test)]
 mod tests {
     use super::{
-        bar_is_at_or_before, market_provider, normalize_tdx_end_date, parse_yahoo_chart,
-        tdx_symbol, yahoo_quote_market, yahoo_search_query, yahoo_symbol, MarketProvider,
-        YahooTdxAdapter,
+        bar_is_at_or_before, current_period_market_time, market_provider, normalize_tdx_end_date,
+        parse_yahoo_chart, tdx_symbol, yahoo_market_phase_at, yahoo_quote_market,
+        yahoo_search_query, yahoo_symbol, MarketProvider, YahooTdxAdapter,
     };
     use serde_json::json;
     use tdxrs::protocol::constants::{MARKET_SH, MARKET_SZ};
@@ -1018,11 +1181,59 @@ mod tests {
         assert_eq!(yahoo_search_query("700"), "0700.HK");
         assert_eq!(yahoo_search_query("HK700"), "0700.HK");
         assert_eq!(yahoo_search_query("0700.HK"), "0700.HK");
+        assert_eq!(yahoo_search_query("01888.HK"), "1888.HK");
         assert_eq!(yahoo_search_query("AAPL.US"), "AAPL");
         assert_eq!(yahoo_search_query("AAPL"), "AAPL");
         assert_eq!(yahoo_quote_market("0700.HK", "HKG"), Some("HK"));
         assert_eq!(yahoo_quote_market("AAPL", "NMS"), Some("US"));
         assert_eq!(yahoo_quote_market("AAPL.TO", "TOR"), None);
+    }
+
+    #[test]
+    fn classifies_us_extended_sessions_and_overnight() {
+        let meta = json!({
+            "exchangeTimezoneName": "America/New_York",
+            "currentTradingPeriod": {
+                "pre": { "start": 1_000, "end": 2_000 },
+                "regular": { "start": 2_000, "end": 3_000 },
+                "post": { "start": 3_000, "end": 4_000 }
+            }
+        });
+        assert_eq!(yahoo_market_phase_at(&meta, "US", 1_500), "pre");
+        assert_eq!(yahoo_market_phase_at(&meta, "US", 2_500), "regular");
+        assert_eq!(yahoo_market_phase_at(&meta, "US", 3_500), "post");
+
+        // 2026-11-12 03:00 ET: outside Yahoo's pre/regular/post windows.
+        let overnight = 1_794_470_400;
+        assert_eq!(yahoo_market_phase_at(&meta, "US", overnight), "overnight");
+    }
+
+    #[test]
+    fn classifies_us_fallback_sessions_without_period_metadata() {
+        let meta = json!({ "exchangeTimezoneName": "America/New_York" });
+        assert_eq!(yahoo_market_phase_at(&meta, "US", 1_794_477_600), "pre");
+        assert_eq!(yahoo_market_phase_at(&meta, "US", 1_794_502_800), "regular");
+        assert_eq!(yahoo_market_phase_at(&meta, "US", 1_794_520_800), "post");
+    }
+
+    #[test]
+    fn does_not_call_weekend_hours_us_sessions_without_period_metadata() {
+        let meta = json!({ "exchangeTimezoneName": "America/New_York" });
+        // Saturday 12:00 ET and Sunday 12:00 ET are closed; Sunday 20:00 is
+        // the weekly overnight window and is reported separately.
+        assert_eq!(yahoo_market_phase_at(&meta, "US", 1_794_675_600), "closed");
+        assert_eq!(yahoo_market_phase_at(&meta, "US", 1_794_762_000), "closed");
+        assert_eq!(yahoo_market_phase_at(&meta, "US", 1_794_790_800), "overnight");
+    }
+
+    #[test]
+    fn current_extended_quote_time_must_be_recent() {
+        let meta = json!({
+            "preMarketTime": 1_000,
+            "currentTradingPeriod": { "pre": { "start": 900, "end": 2_000 } }
+        });
+        assert_eq!(current_period_market_time(&meta, "pre", &[], 1_100), Some(1_000));
+        assert_eq!(current_period_market_time(&meta, "pre", &[], 1_000 + 5 * 60 + 1), None);
     }
 
     #[test]

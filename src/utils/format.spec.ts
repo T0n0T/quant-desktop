@@ -7,6 +7,7 @@ import {
   formatQuoteChange,
   formatQuotePrice,
   formatQuoteVolume,
+  formatMarketPhase,
   getQuotePrecision,
 } from './format';
 
@@ -76,5 +77,17 @@ describe('foreign quote formatting', () => {
     expect(formatQuoteVolume(123456, 'HK')).toBe('12.35万股');
     expect(formatQuoteAmount(1.25e8, 'US')).toBe('$1.25亿');
     expect(formatQuoteAmount(1.25e8, 'CN')).toBe('1.25亿');
+  });
+});
+
+describe('market phase labels', () => {
+  it('labels US extended sessions and states that overnight ATS data is unavailable', () => {
+    expect(formatMarketPhase('pre', 'US')).toBe('盘前');
+    expect(formatMarketPhase('pre_no_data', 'US')).toBe('盘前暂无报价');
+    expect(formatMarketPhase('regular', 'US')).toBe('正常交易');
+    expect(formatMarketPhase('post', 'US')).toBe('盘后');
+    expect(formatMarketPhase('post_no_data', 'US')).toBe('盘后暂无报价');
+    expect(formatMarketPhase('overnight', 'US')).toBe('夜盘无实时数据');
+    expect(formatMarketPhase('closed', 'US')).toBe('已收盘');
   });
 });

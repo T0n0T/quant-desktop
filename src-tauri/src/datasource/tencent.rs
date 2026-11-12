@@ -148,6 +148,7 @@ impl TencentAdapter {
             turnover: (super::normalize_turnover(turnover) * 100.0).round() / 100.0,
             turnover_rate,
             timestamp: chrono::Utc::now().timestamp(),
+            market_phase: "regular".to_string(),
         })
     }
 

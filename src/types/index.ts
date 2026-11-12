@@ -13,6 +13,7 @@ export interface Quote {
   turnover: number;
   turnover_rate: number | null;
   timestamp: number;
+  market_phase: 'pre' | 'pre_no_data' | 'regular' | 'post' | 'post_no_data' | 'overnight' | 'closed';
 }
 
 export interface IndexQuote {

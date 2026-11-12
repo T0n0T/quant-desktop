@@ -125,6 +125,7 @@ impl SinaAdapter {
             turnover,
             turnover_rate,
             timestamp: chrono::Utc::now().timestamp(),
+            market_phase: "regular".to_string(),
         })
     }
 

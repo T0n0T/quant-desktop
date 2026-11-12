@@ -13,6 +13,7 @@ import {
   formatQuoteChange,
   formatQuotePrice,
   formatQuoteVolume,
+  formatMarketPhase,
   formatCode,
   cnCategory,
   getQuotePrecision,
@@ -85,6 +86,22 @@ function coloredPct(row: WatchItem, text: string) {
   return h('span', { class: `pct-col ${q.change_pct >= 0 ? 'up' : 'down'}` }, text);
 }
 
+function quotePriceCell(row: WatchItem, text: string) {
+  const quote = quoteStore.getQuote(row.code, row.market);
+  if (!quote) return '--';
+  const value = coloredPct(row, text);
+  if ((row.market !== 'US' && row.market !== 'HK') || quote.market_phase === 'regular') {
+    return value;
+  }
+  return h('span', { class: 'quote-price-cell' }, [
+    value,
+    h('span', {
+      class: ['quote-market-phase', `phase-${quote.market_phase}`],
+      title: formatMarketPhase(quote.market_phase, quote.market),
+    }, formatMarketPhase(quote.market_phase, quote.market)),
+  ]);
+}
+
 /** 可排序的数值列。排除 code/name —— 它们是字符串，做减法没有意义。 */
 type NumericColumnKey = 'price' | 'change_pct' | 'change' | 'volume' | 'turnover' | 'turnover_rate';
 
@@ -120,7 +137,7 @@ function buildColumn(key: ColumnKey): DataTableColumns<WatchItem>[number] {
         render: (row) => {
           const q = quoteStore.getQuote(row.code, row.market);
           if (!q) return '--';
-          return coloredPct(row, formatQuotePrice(q.price, row.market, '--', getQuotePrecision(row.code, q.price)));
+          return quotePriceCell(row, formatQuotePrice(q.price, row.market, '--', getQuotePrecision(row.code, q.price)));
         },
       };
     case 'change_pct':
@@ -557,6 +574,21 @@ defineExpose({ clearSelection: () => { selectedRow.value = null; } });
 :deep(.pct-col) { font-weight: 500; }
 :deep(.pct-col.up) { color: var(--color-up); }
 :deep(.pct-col.down) { color: var(--color-down); }
+:deep(.quote-price-cell) {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  line-height: 1;
+}
+:deep(.quote-market-phase) {
+  font-size: 9px;
+  color: var(--color-text-tertiary);
+  white-space: nowrap;
+}
+:deep(.quote-market-phase.phase-pre),
+:deep(.quote-market-phase.phase-post) { color: var(--color-info, #4da3ff); }
+:deep(.quote-market-phase.phase-overnight) { color: var(--color-warning); }
 /* 列渲染内容由 NDataTable 挂载，scoped 样式需用 :deep() 才能生效 */
 :deep(.code-text) {
   font-family: var(--font-mono);
