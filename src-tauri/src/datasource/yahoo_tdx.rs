@@ -19,6 +19,9 @@ use crate::domain::{AppError, Depth, IndexQuote, KLineData, Level, MinuteData, Q
 const YAHOO_CHART_URL: &str = "https://query1.finance.yahoo.com/v8/finance/chart";
 const YAHOO_SEARCH_URL: &str = "https://query1.finance.yahoo.com/v1/finance/search";
 const MAX_YAHOO_SEARCH_RESULTS: usize = 20;
+const YAHOO_US_EXCHANGES: &[&str] = &[
+    "ASE", "BATS", "BTS", "NCM", "NGM", "NMS", "NAS", "NYQ", "NYS", "OTC", "PCX", "PNK",
+];
 const TDX_QUOTE_BATCH_SIZE: usize = 60;
 const TDX_KLINE_PAGE_SIZE: u16 = 800;
 const MAX_TDX_KLINE_PAGES: usize = 20;
@@ -118,6 +121,34 @@ fn yahoo_symbol(code: &str, market: &str) -> Option<String> {
         "US" => Some(code.strip_suffix(".US").unwrap_or(&code).to_string()),
         _ => None,
     }
+}
+
+fn yahoo_search_query(keyword: &str) -> String {
+    let trimmed = keyword.trim();
+    let upper = trimmed.to_ascii_uppercase();
+    if let Some(code) = upper.strip_suffix(".US") {
+        return code.to_string();
+    }
+
+    let hk_code = upper.strip_prefix("HK").unwrap_or(&upper);
+    if !hk_code.is_empty()
+        && hk_code.len() <= 5
+        && hk_code.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return yahoo_symbol(hk_code, "HK").unwrap_or(upper);
+    }
+
+    trimmed.to_string()
+}
+
+fn yahoo_quote_market(symbol: &str, exchange: &str) -> Option<&'static str> {
+    if symbol.to_ascii_uppercase().ends_with(".HK") {
+        return Some("HK");
+    }
+    if YAHOO_US_EXCHANGES.contains(&exchange.to_ascii_uppercase().as_str()) {
+        return Some("US");
+    }
+    None
 }
 
 fn local_timezone(meta: &Value, market: &str) -> Tz {
@@ -713,11 +744,12 @@ impl YahooTdxAdapter {
     }
 
     async fn yahoo_search(&self, keyword: &str, market: &str) -> Result<Vec<StockBrief>, AppError> {
+        let query = yahoo_search_query(keyword);
         let response = self
             .yahoo
             .get(YAHOO_SEARCH_URL)
             .query(&[
-                ("q", keyword.trim()),
+                ("q", query.as_str()),
                 ("quotesCount", "20"),
                 ("newsCount", "0"),
             ])
@@ -750,7 +782,10 @@ impl YahooTdxAdapter {
                 continue;
             };
             let upper = symbol.to_ascii_uppercase();
-            let item_market = if upper.ends_with(".HK") { "HK" } else { "US" };
+            let exchange = item.get("exchange").and_then(Value::as_str).unwrap_or("");
+            let Some(item_market) = yahoo_quote_market(&upper, exchange) else {
+                continue;
+            };
             if wanted != "ALL" && wanted != item_market {
                 continue;
             }
@@ -936,7 +971,7 @@ impl DataSource for YahooTdxAdapter {
 mod tests {
     use super::{
         bar_is_at_or_before, market_provider, normalize_tdx_end_date, parse_yahoo_chart,
-        tdx_symbol, yahoo_symbol, MarketProvider,
+        tdx_symbol, yahoo_quote_market, yahoo_search_query, yahoo_symbol, MarketProvider,
     };
     use serde_json::json;
     use tdxrs::protocol::constants::{MARKET_SH, MARKET_SZ};
@@ -956,6 +991,18 @@ mod tests {
         assert_eq!(tdx_symbol("s_sh000001").unwrap().2, "sh000001");
         assert_eq!(yahoo_symbol("700", "HK"), Some("0700.HK".into()));
         assert_eq!(yahoo_symbol("AAPL", "US"), Some("AAPL".into()));
+    }
+
+    #[test]
+    fn normalizes_foreign_search_codes_and_filters_non_us_exchanges() {
+        assert_eq!(yahoo_search_query("700"), "0700.HK");
+        assert_eq!(yahoo_search_query("HK700"), "0700.HK");
+        assert_eq!(yahoo_search_query("0700.HK"), "0700.HK");
+        assert_eq!(yahoo_search_query("AAPL.US"), "AAPL");
+        assert_eq!(yahoo_search_query("AAPL"), "AAPL");
+        assert_eq!(yahoo_quote_market("0700.HK", "HKG"), Some("HK"));
+        assert_eq!(yahoo_quote_market("AAPL", "NMS"), Some("US"));
+        assert_eq!(yahoo_quote_market("AAPL.TO", "TOR"), None);
     }
 
     #[test]
