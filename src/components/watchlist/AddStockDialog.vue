@@ -21,6 +21,7 @@ const searching = ref(false);
 const searchError = ref('');
 const searchInputRef = ref<InputInst | null>(null);
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+let searchGeneration = 0;
 
 /** 这次添加落到哪些分组。默认是打开对话框时所在的分组，用户可勾选多个。 */
 const targetGroupIds = ref<number[]>([watchlist.activeGroupId]);
@@ -36,7 +37,15 @@ const selectedGroups = computed<WatchGroup[]>(() =>
  * 所在的分组才是用户的上下文，上一次的选择不该压过它。
  */
 watch(() => props.show, async (visible) => {
-  if (!visible) return;
+  searchGeneration++;
+  if (!visible) {
+    if (debounceTimer) {
+      clearTimeout(debounceTimer);
+      debounceTimer = null;
+    }
+    searching.value = false;
+    return;
+  }
   if (debounceTimer) {
     clearTimeout(debounceTimer);
     debounceTimer = null;
@@ -57,6 +66,7 @@ watch(() => props.show, async (visible) => {
 });
 
 onUnmounted(() => {
+  searchGeneration++;
   if (debounceTimer) {
     clearTimeout(debounceTimer);
     debounceTimer = null;
@@ -64,22 +74,26 @@ onUnmounted(() => {
 });
 
 watch(() => keyword.value, (val) => {
+  const generation = ++searchGeneration;
   if (debounceTimer) clearTimeout(debounceTimer);
+  results.value = [];
+  searchError.value = '';
+  searching.value = false;
   if (!val || val.trim().length === 0) {
-    results.value = [];
-    searchError.value = '';
     return;
   }
   debounceTimer = setTimeout(async () => {
+    if (generation !== searchGeneration) return;
     searching.value = true;
-    searchError.value = '';
     try {
-      results.value = await invoke<StockBrief[]>('search_stocks', { keyword: val.trim() });
+      const found = await invoke<StockBrief[]>('search_stocks', { keyword: val.trim() });
+      if (generation === searchGeneration) results.value = found;
     } catch (e) {
-      results.value = [];
-      searchError.value = `搜索失败: ${String(e).slice(0, 60)}`;
+      if (generation === searchGeneration) {
+        searchError.value = `搜索失败: ${String(e).slice(0, 60)}`;
+      }
     } finally {
-      searching.value = false;
+      if (generation === searchGeneration) searching.value = false;
     }
   }, 300);
 });

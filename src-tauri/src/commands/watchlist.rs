@@ -286,7 +286,9 @@ pub async fn search_stocks(
                     }
                 }
             }
-            Err(error) => log::debug!("Yahoo search unavailable: {}", error),
+            Err(error) => crate::logging::warn_throttled("watchlist.search.yahoo", || {
+                format!("Yahoo stock search unavailable: {}", error)
+            }),
         }
     }
     Ok(results)

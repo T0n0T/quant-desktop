@@ -11,7 +11,7 @@ use chrono_tz::Tz;
 use reqwest::Client;
 use serde_json::Value;
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use crate::datasource::{DataSource, INDEX_CODES, INDEX_POOL_NAMES};
 use crate::domain::{AppError, Depth, IndexQuote, KLineData, Level, MinuteData, Quote, StockBrief};
@@ -42,27 +42,34 @@ struct YahooChartData {
 /// A selectable source that routes CN/HK/US symbols to the appropriate backend.
 #[derive(Clone)]
 pub struct YahooTdxAdapter {
-    yahoo: Client,
+    yahoo: Arc<OnceLock<Client>>,
     tdx: Arc<tdxrs::net::client::TdxHqClient>,
 }
 
 impl YahooTdxAdapter {
     pub fn new() -> Self {
-        // Keep reqwest's environment proxy support so HTTPS_PROXY/HTTP_PROXY
-        // can be supplied when the desktop app is started from a shell.
-        let yahoo = Client::builder()
-            .timeout(std::time::Duration::from_secs(15))
-            .user_agent(concat!(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ",
-                "AppleWebKit/537.36 (KHTML, like Gecko) ",
-                "Chrome/131.0.0.0 Safari/537.36"
-            ))
-            .build()
-            .expect("failed to build Yahoo Finance HTTP client");
         Self {
-            yahoo,
+            yahoo: Arc::new(OnceLock::new()),
             tdx: Arc::new(tdxrs::net::client::TdxHqClient::new()),
         }
+    }
+
+    fn yahoo_client(&self) -> &Client {
+        // Keep reqwest's environment proxy support so HTTPS_PROXY/HTTP_PROXY
+        // can be supplied when the desktop app is started from a shell. The
+        // app may also discover a local proxy during setup, so build lazily
+        // after that discovery has completed.
+        self.yahoo.get_or_init(|| {
+            Client::builder()
+                .timeout(std::time::Duration::from_secs(15))
+                .user_agent(concat!(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ",
+                    "AppleWebKit/537.36 (KHTML, like Gecko) ",
+                    "Chrome/131.0.0.0 Safari/537.36"
+                ))
+                .build()
+                .expect("failed to build Yahoo Finance HTTP client")
+        })
     }
 }
 
@@ -460,7 +467,7 @@ impl YahooTdxAdapter {
         period2: Option<i64>,
     ) -> Result<Value, AppError> {
         let mut request = self
-            .yahoo
+            .yahoo_client()
             .get(format!("{}/{}", YAHOO_CHART_URL, symbol))
             .query(&[
                 ("interval", interval),
@@ -746,7 +753,7 @@ impl YahooTdxAdapter {
     async fn yahoo_search(&self, keyword: &str, market: &str) -> Result<Vec<StockBrief>, AppError> {
         let query = yahoo_search_query(keyword);
         let response = self
-            .yahoo
+            .yahoo_client()
             .get(YAHOO_SEARCH_URL)
             .query(&[
                 ("q", query.as_str()),
@@ -972,9 +979,22 @@ mod tests {
     use super::{
         bar_is_at_or_before, market_provider, normalize_tdx_end_date, parse_yahoo_chart,
         tdx_symbol, yahoo_quote_market, yahoo_search_query, yahoo_symbol, MarketProvider,
+        YahooTdxAdapter,
     };
     use serde_json::json;
     use tdxrs::protocol::constants::{MARKET_SH, MARKET_SZ};
+
+    #[test]
+    fn shares_a_lazily_initialized_yahoo_client() {
+        let adapter = YahooTdxAdapter::new();
+        let clone = adapter.clone();
+
+        assert!(adapter.yahoo.get().is_none());
+        let first = clone.yahoo_client();
+
+        assert!(adapter.yahoo.get().is_some());
+        assert!(std::ptr::eq(first, adapter.yahoo_client()));
+    }
 
     #[test]
     fn routes_cn_to_tdx_and_hk_us_to_yahoo() {
