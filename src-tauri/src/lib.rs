@@ -467,6 +467,9 @@ pub fn run() {
             ds_manager.register(Box::new(
                 crate::datasource::sina::SinaAdapter::new(),
             ));
+            ds_manager.register(Box::new(
+                crate::datasource::yahoo_tdx::YahooTdxAdapter::new(),
+            ));
 
             // Restore last used data source from settings.
             // Use set_active_initial to avoid triggering a duplicate wakeup fetch

@@ -272,5 +272,22 @@ pub async fn search_stocks(
     manager: State<'_, Arc<DataSourceManager>>,
     keyword: String,
 ) -> Result<Vec<crate::domain::StockBrief>, String> {
-    Ok(crate::datasource::search::search_cn(manager.inner().as_ref(), &keyword).await)
+    let mut results = crate::datasource::search::search_cn(manager.inner().as_ref(), &keyword).await;
+    if let Some(source) = manager.get_source("yahoo_tdx") {
+        match source.search(&keyword, "ALL").await {
+            Ok(foreign) => {
+                let mut seen: std::collections::HashSet<(String, String)> = results
+                    .iter()
+                    .map(|item| (item.market.clone(), item.code.clone()))
+                    .collect();
+                for item in foreign {
+                    if seen.insert((item.market.clone(), item.code.clone())) {
+                        results.push(item);
+                    }
+                }
+            }
+            Err(error) => log::debug!("Yahoo search unavailable: {}", error),
+        }
+    }
+    Ok(results)
 }

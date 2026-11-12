@@ -181,7 +181,7 @@ async function handleAdd(stock: StockBrief) {
               @click="handleAdd(s)"
             >
               <div class="result-info">
-                <MarketTag :code="s.code" :category="s.category" />
+                <MarketTag :code="s.code" :market="s.market" :category="s.category" />
                 <span class="result-name">{{ s.name }}</span>
                 <span class="result-code tabular-nums">{{ formatCode(s.code) }}</span>
               </div>

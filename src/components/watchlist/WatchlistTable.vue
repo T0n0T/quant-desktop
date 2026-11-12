@@ -8,7 +8,15 @@ import { useMarketStore } from '@/stores/market';
 import { useSettingsStore } from '@/stores/settings';
 import type { WatchItem } from '@/types';
 import { Inbox, Plus, Upload } from '@lucide/vue';
-import { formatPrice, formatVolume, formatCode, cnCategory, getQuotePrecision } from '@/utils/format';
+import {
+  formatQuoteAmount,
+  formatQuoteChange,
+  formatQuotePrice,
+  formatQuoteVolume,
+  formatCode,
+  cnCategory,
+  getQuotePrecision,
+} from '@/utils/format';
 import { columnLabel, type ColumnKey } from '@/utils/prefs';
 import AddStockDialog from './AddStockDialog.vue';
 import ImportWatchlistDialog from './ImportWatchlistDialog.vue';
@@ -102,7 +110,7 @@ function buildColumn(key: ColumnKey): DataTableColumns<WatchItem>[number] {
       return {
         title, key, width,
         render: (row) => h('div', { class: 'name-cell' }, [
-          h(MarketTag, { code: row.code, category: cnCategory(row.code) }),
+          h(MarketTag, { code: row.code, market: row.market, category: cnCategory(row.code) }),
           h('span', { class: 'name-text' }, row.name),
         ]),
       };
@@ -112,7 +120,7 @@ function buildColumn(key: ColumnKey): DataTableColumns<WatchItem>[number] {
         render: (row) => {
           const q = quoteStore.getQuote(row.code, row.market);
           if (!q) return '--';
-          return coloredPct(row, formatPrice(q.price, '--', getQuotePrecision(row.code, q.price)));
+          return coloredPct(row, formatQuotePrice(q.price, row.market, '--', getQuotePrecision(row.code, q.price)));
         },
       };
     case 'change_pct':
@@ -130,8 +138,7 @@ function buildColumn(key: ColumnKey): DataTableColumns<WatchItem>[number] {
         render: (row) => {
           const q = quoteStore.getQuote(row.code, row.market);
           if (!q) return '--';
-          // ETF/LOF 固定 3 位：涨跌额与价格同精度，整分变化也显示 +0.010 而不是 +0.01
-          return coloredPct(row, `${q.change >= 0 ? '+' : ''}${formatPrice(q.change, '--', getQuotePrecision(row.code, q.change))}`);
+          return coloredPct(row, formatQuoteChange(q.change, row.market, '--', getQuotePrecision(row.code, q.change)));
         },
       };
     case 'volume':
@@ -140,7 +147,7 @@ function buildColumn(key: ColumnKey): DataTableColumns<WatchItem>[number] {
         render: (row) => {
           const q = quoteStore.getQuote(row.code, row.market);
           if (!q || q.volume == null) return '--';
-          return h('span', formatVolume(q.volume));
+          return h('span', formatQuoteVolume(q.volume, row.market));
         },
       };
     case 'turnover':
@@ -149,10 +156,7 @@ function buildColumn(key: ColumnKey): DataTableColumns<WatchItem>[number] {
         render: (row) => {
           const q = quoteStore.getQuote(row.code, row.market);
           if (!q || q.turnover == null) return '--';
-          const wan = q.turnover / 10000;
-          if (wan >= 10000) return h('span', `${(wan / 10000).toFixed(2)}亿`);
-          if (wan > 0) return h('span', `${wan.toFixed(2)}万`);
-          return h('span', '0');
+          return h('span', formatQuoteAmount(q.turnover, row.market, '0'));
         },
       };
     case 'turnover_rate':

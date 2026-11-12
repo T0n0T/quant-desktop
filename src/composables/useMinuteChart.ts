@@ -100,10 +100,11 @@ export function useMinuteChart(options: {
     const width = c.getSize('candle_pane', 'main')?.width ?? 0;
     if (!(width > 0)) return;
 
-    const layout = minuteAxisLayout(width, bars);
+    const market = unref(options.market).toUpperCase();
+    const layout = minuteAxisLayout(width, bars, market);
     // 图宽装不下一整天时柱宽会被 barSpaceLimit 卡住，自算的排版落不到图上：
     // 留给 klinecharts 自己排，刻度也跟着退回默认（见 minuteAxisTicks）
-    if (!sessionFits(width, layout.barMinutes)) return;
+    if (!sessionFits(width, layout.barMinutes, market)) return;
 
     c.setBarSpace(layout.barSpace);
     // 留白按**实际**柱宽算：setBarSpace 可能被 barSpaceLimit 夹住，两者才不会打架。
@@ -128,10 +129,11 @@ export function useMinuteChart(options: {
     if (klineData.value.length === 0) return params.defaultTicks;
     // 跨度直接由数据推（1 分钟线 240 格、5 分钟线 48 格），不依赖 applySessionAxis 跑过没有，
     // 免得某一帧按错的跨度摆刻度
-    const barMinutes = inferBarMinutes(klineData.value);
+    const market = unref(options.market).toUpperCase();
+    const barMinutes = inferBarMinutes(klineData.value, market);
     // 一整天铺不下时固定刻度没有意义：柱宽被 barSpaceLimit 卡住，五个刻度会全被钳到右缘叠起来
-    if (!sessionFits(params.bounding.width, barMinutes)) return params.defaultTicks;
-    const ticks = sessionTicks(params.bounding.width, c.getBarSpace().bar, barMinutes);
+    if (!sessionFits(params.bounding.width, barMinutes, market)) return params.defaultTicks;
+    const ticks = sessionTicks(params.bounding.width, c.getBarSpace().bar, barMinutes, market);
     // 图还没量到宽度时退回 klinecharts 自己的刻度，别把横轴清空
     return ticks.length > 0 ? ticks : params.defaultTicks;
   }

@@ -8,7 +8,7 @@ import { useQuoteStore } from '@/stores/quote';
 import { useWatchlistStore } from '@/stores/watchlist';
 import { useSettingsStore } from '@/stores/settings';
 import { useTickerWindowHeight } from '@/composables/useTickerWindowHeight';
-import { formatPrice } from '@/utils/format';
+import { formatQuotePrice } from '@/utils/format';
 import { nextPageStart, windowItems } from '@/utils/paging';
 
 const quoteStore = useQuoteStore();
@@ -168,6 +168,7 @@ const tickerItems = computed(() =>
     return {
       name: item.name,
       code: item.code,
+      market: item.market,
       price: q?.price ?? null,
       changePct: q?.change_pct ?? null,
     };
@@ -361,7 +362,7 @@ async function handleClick(event: MouseEvent | KeyboardEvent) {
             v-if="item.price !== null"
             class="ticker-price tabular-nums"
             :class="item.changePct !== null && item.changePct >= 0 ? 'up' : 'down'"
-          >{{ formatPrice(item.price) }}</span>
+          >{{ formatQuotePrice(item.price, item.market) }}</span>
           <span v-else class="ticker-na">--</span>
           <span
             v-if="item.changePct !== null"

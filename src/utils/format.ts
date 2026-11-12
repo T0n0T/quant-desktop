@@ -54,6 +54,52 @@ export function formatPrice(
   return price.toFixed(precision ?? getPricePrecision(price));
 }
 
+export function currencyPrefix(market: string): string {
+  if (market === 'HK') return 'HK$';
+  if (market === 'US') return '$';
+  return '';
+}
+
+export function formatQuotePrice(
+  price: number | null | undefined,
+  market: string,
+  fallback = '--',
+  precision?: number,
+): string {
+  if (price == null || isNaN(price)) return fallback;
+  return `${currencyPrefix(market)}${formatPrice(price, fallback, precision)}`;
+}
+
+export function formatQuoteChange(
+  change: number | null | undefined,
+  market: string,
+  fallback = '--',
+  precision?: number,
+): string {
+  if (change == null || isNaN(change)) return fallback;
+  const sign = change >= 0 ? '+' : '-';
+  return `${sign}${currencyPrefix(market)}${formatPrice(Math.abs(change), fallback, precision)}`;
+}
+
+export function formatQuoteVolume(volume: number | null | undefined, market: string, fallback = '--'): string {
+  if (volume == null || isNaN(volume)) return fallback;
+  if (market === 'CN') return formatVolume(volume, fallback);
+  if (volume >= 1e8) return `${(volume / 1e8).toFixed(2)}亿股`;
+  if (volume >= 1e4) return `${(volume / 1e4).toFixed(2)}万股`;
+  return `${Math.round(volume).toLocaleString()}股`;
+}
+
+export function formatQuoteAmount(amount: number | null | undefined, market: string, fallback = '--'): string {
+  if (market === 'CN') return formatAmount(amount, fallback);
+  if (amount == null || isNaN(amount) || amount <= 0) return fallback;
+  const unit = amount >= 1e8
+    ? `${(amount / 1e8).toFixed(2)}亿`
+    : amount >= 1e4
+      ? `${(amount / 1e4).toFixed(2)}万`
+      : amount.toFixed(0);
+  return `${currencyPrefix(market)}${unit}`;
+}
+
 /**
  * 报价显示精度 —— 按**标的类别**而不是数值决定。
  *

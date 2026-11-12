@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { formatIndexCode, formatTurnoverDelta, formatPrice, getQuotePrecision } from './format';
+import {
+  formatIndexCode,
+  formatTurnoverDelta,
+  formatPrice,
+  formatQuoteAmount,
+  formatQuoteChange,
+  formatQuotePrice,
+  formatQuoteVolume,
+  getQuotePrecision,
+} from './format';
 
 // 「较昨同期」的增量界面会按应用配色上色（放量=涨色、缩量=跌色，随 cn/us
 // 翻转），但符号仍必须留在文字里 —— 颜色不是唯一信号。这里把「符号 + 取整到亿
@@ -52,5 +61,20 @@ describe('getQuotePrecision / formatPrice', () => {
     expect(getQuotePrecision('sz000001', 0.01)).toBe(2);
     expect(getQuotePrecision('sh113001', 123.456)).toBe(3);
     expect(formatPrice(123.456, '--', getQuotePrecision('sh113001', 123.456))).toBe('123.456');
+  });
+});
+
+describe('foreign quote formatting', () => {
+  it('keeps HKD and USD visible in price and change values', () => {
+    expect(formatQuotePrice(123.4, 'HK')).toBe('HK$123.40');
+    expect(formatQuotePrice(123.4, 'US')).toBe('$123.40');
+    expect(formatQuoteChange(-1.25, 'US')).toBe('-$1.25');
+  });
+
+  it('keeps foreign volume in shares and amount in the quote currency', () => {
+    expect(formatQuoteVolume(1234, 'US')).toBe('1,234股');
+    expect(formatQuoteVolume(123456, 'HK')).toBe('12.35万股');
+    expect(formatQuoteAmount(1.25e8, 'US')).toBe('$1.25亿');
+    expect(formatQuoteAmount(1.25e8, 'CN')).toBe('1.25亿');
   });
 });
