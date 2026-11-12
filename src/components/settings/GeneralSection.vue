@@ -96,6 +96,19 @@ function removeMovingAverage(index: number) {
         </SettingsRow>
 
         <SettingsRow
+          title="新加入自选自动进入行情条"
+          description="开启后，之后新增或导入的股票会自动显示在悬浮行情条；不会修改已有自选"
+        >
+          <input
+            class="cbx"
+            type="checkbox"
+            :checked="settings.tickerAutoIncludeNew"
+            aria-label="新加入自选自动进入行情条"
+            @change="settings.setTickerAutoIncludeNew(($event.target as HTMLInputElement).checked)"
+          />
+        </SettingsRow>
+
+        <SettingsRow
           class="ma-settings-row"
           title="主图均线"
           description="周期按 K 线根数计算；调整后图表立即更新"

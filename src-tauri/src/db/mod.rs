@@ -31,6 +31,8 @@ pub mod keys {
     /// 点击行情条是否唤醒主窗口。默认开；关闭后点击只是纯展示，不叫出主界面。
     pub const TICKER_CLICK_WAKES: &str = "ticker_click_wakes";
     pub const TICKER_ITEMS_PER_PAGE: &str = "ticker_items_per_page";
+    /// 新加入自选是否自动进入行情条。只影响新增股票，不改已有股票的播报开关。
+    pub const TICKER_AUTO_INCLUDE_NEW: &str = "ticker_auto_include_new";
     pub const WATCHLIST_COLUMNS: &str = "watchlist_columns";
     pub const WATCHLIST_DEFAULT_SORT: &str = "watchlist_default_sort";
     pub const COLOR_SCHEME: &str = "color_scheme";
@@ -356,6 +358,7 @@ impl Database {
         (keys::TICKER_TRANSPARENT, "0"),
         (keys::TICKER_CLICK_WAKES, "1"),
         (keys::TICKER_ITEMS_PER_PAGE, "2"),
+        (keys::TICKER_AUTO_INCLUDE_NEW, "1"),
         // 自选列表
         (keys::WATCHLIST_COLUMNS, DEFAULT_WATCHLIST_COLUMNS_JSON),
         (keys::WATCHLIST_DEFAULT_SORT, ""),
@@ -491,14 +494,25 @@ impl Database {
         if gids.is_empty() {
             gids.push(Self::default_group_id(&conn)?);
         }
+        // 只给新插入的股票应用此偏好；冲突时保留已有股票的 ticker_enabled 状态。
+        let ticker_enabled = Self::get_setting_conn(&conn, keys::TICKER_AUTO_INCLUDE_NEW)?
+            .as_deref()
+            != Some("0");
         let now = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string();
         let tx = conn.unchecked_transaction()?;
         tx.execute(
             "INSERT INTO watchlist
                 (code, market, name, added_at, ticker_enabled, ticker_order)
-             VALUES (?1, ?2, ?3, ?4, 1, ?5)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT(code, market) DO NOTHING",
-            params![code, market, name, now, Self::next_ticker_order(&conn)?],
+            params![
+                code,
+                market,
+                name,
+                now,
+                ticker_enabled,
+                Self::next_ticker_order(&conn)?
+            ],
         )?;
         let watch_id: i64 = tx.query_row(
             "SELECT id FROM watchlist WHERE code = ?1 AND market = ?2",
@@ -1125,6 +1139,63 @@ mod tests {
             group_names_of(&db, items[0].id),
             vec![DEFAULT_GROUP_NAME.to_string()],
             "新增自选应落在默认分组"
+        );
+
+        drop(db);
+        std::fs::remove_dir_all(&dir).expect("临时测试目录应可清理");
+    }
+
+    #[test]
+    fn add_watch_respects_auto_include_new_setting() {
+        let dir = temp_app_dir("auto-ticker");
+        let db = Database::open(dir.clone()).unwrap();
+        let gid = db.get_watchlist_snapshot().unwrap().default_group_id;
+
+        db.set_setting(keys::TICKER_AUTO_INCLUDE_NEW, "0").unwrap();
+        db.add_watch("sh600519", "CN", "贵州茅台", &[gid]).unwrap();
+        assert!(
+            !db.get_watchlist().unwrap()[0].ticker_enabled,
+            "关闭自动加入后，新加入的自选不应进入行情条"
+        );
+
+        db.set_setting(keys::TICKER_AUTO_INCLUDE_NEW, "1").unwrap();
+        db.add_watch("sz000001", "CN", "平安银行", &[gid]).unwrap();
+        let items = db.get_watchlist().unwrap();
+        let enabled = items
+            .iter()
+            .find(|item| item.code == "sz000001")
+            .unwrap()
+            .ticker_enabled;
+        assert!(
+            enabled,
+            "开启自动加入后，新加入的自选应进入行情条"
+        );
+
+        drop(db);
+        std::fs::remove_dir_all(&dir).expect("临时测试目录应可清理");
+    }
+
+    #[test]
+    fn adding_existing_watch_preserves_ticker_enabled_state() {
+        let dir = temp_app_dir("auto-ticker-existing");
+        let db = Database::open(dir.clone()).unwrap();
+        let g1 = db.get_watchlist_snapshot().unwrap().default_group_id;
+        let g2 = db.add_watch_group("科技").unwrap().id;
+
+        db.set_setting(keys::TICKER_AUTO_INCLUDE_NEW, "0").unwrap();
+        db.add_watch("sz300750", "CN", "宁德时代", &[g1]).unwrap();
+        db.set_setting(keys::TICKER_AUTO_INCLUDE_NEW, "1").unwrap();
+        db.add_watch("sz300750", "CN", "宁德时代", &[g2]).unwrap();
+
+        let item = db
+            .get_watchlist()
+            .unwrap()
+            .into_iter()
+            .find(|watch| watch.code == "sz300750")
+            .unwrap();
+        assert!(
+            !item.ticker_enabled,
+            "重新加入已有自选时不应被新设置改写原来的播报开关"
         );
 
         drop(db);
@@ -1886,6 +1957,7 @@ mod tests {
                 "ticker_transparent",
                 "ticker_click_wakes",
                 "ticker_items_per_page",
+                "ticker_auto_include_new",
                 "watchlist_columns",
                 "watchlist_default_sort",
                 "color_scheme",
@@ -1929,6 +2001,7 @@ mod tests {
             keys::TICKER_VISIBLE,
             keys::TICKER_TRANSPARENT,
             keys::TICKER_CLICK_WAKES,
+            keys::TICKER_AUTO_INCLUDE_NEW,
         ] {
             let v = Database::DEFAULT_SETTINGS
                 .iter()

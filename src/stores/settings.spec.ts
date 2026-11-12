@@ -147,13 +147,16 @@ describe('派生配置的解析与兜底', () => {
       ticker_visible: '0',
       ticker_transparent: '1',
       ticker_click_wakes: '0',
+      ticker_auto_include_new: '0',
     });
     expect(store.marketOverviewVisible).toBe(false);
     expect(store.tickerVisible).toBe(false);
     expect(store.tickerTransparent).toBe(true);
     expect(store.tickerClickWakes).toBe(false);
+    expect(store.tickerAutoIncludeNew).toBe(false);
     // 点击唤醒默认开 —— 这是行情条一直以来的行为
     expect((await load({})).tickerClickWakes).toBe(true);
+    expect((await load({})).tickerAutoIncludeNew).toBe(true);
   });
 
   it('color_scheme 只认 cn/us，其余退回 cn', async () => {
@@ -277,6 +280,23 @@ describe('写入与跨窗口同步', () => {
     expect(store.tickerClickWakes).toBe(false);
     expect(emitMock).toHaveBeenCalledWith('settings-changed', {
       key: 'ticker_click_wakes',
+      value: '0',
+    });
+  });
+
+  it('setTickerAutoIncludeNew 写 "0"/"1" 并广播设置', async () => {
+    const store = await load({});
+    expect(store.tickerAutoIncludeNew).toBe(true);
+
+    invokeMock.mockResolvedValueOnce(undefined);
+    await store.setTickerAutoIncludeNew(false);
+    expect(invokeMock).toHaveBeenCalledWith('set_setting', {
+      key: 'ticker_auto_include_new',
+      value: '0',
+    });
+    expect(store.tickerAutoIncludeNew).toBe(false);
+    expect(emitMock).toHaveBeenCalledWith('settings-changed', {
+      key: 'ticker_auto_include_new',
       value: '0',
     });
   });
