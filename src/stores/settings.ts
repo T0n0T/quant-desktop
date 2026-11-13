@@ -28,6 +28,7 @@ import {
 const DEFAULTS = {
   sector_top_n: '5',
   ticker_items_per_page: '2',
+  ticker_auto_include_new: '1',
 } as const;
 
 /** 指数区默认勾选（与后端 `datasource::DEFAULT_INDEX_CODES` 一致）。
@@ -98,6 +99,10 @@ export const useSettingsStore = defineStore('settings', () => {
   /** 点击行情条是否唤醒主界面。默认开 —— 这是它一直以来的行为。 */
   const tickerClickWakes = computed(() =>
     parseBool(settings.value['ticker_click_wakes'], true));
+
+  /** 新加入自选是否自动进入行情条；只影响新增股票，不改已有股票。 */
+  const tickerAutoIncludeNew = computed(() =>
+    parseBool(settings.value['ticker_auto_include_new'] ?? DEFAULTS.ticker_auto_include_new, true));
 
   const tickerItemsPerPage = computed(() =>
     parseCount(
@@ -211,6 +216,10 @@ export const useSettingsStore = defineStore('settings', () => {
 
   async function setTickerClickWakes(v: boolean) {
     await setSetting('ticker_click_wakes', v ? '1' : '0');
+  }
+
+  async function setTickerAutoIncludeNew(v: boolean) {
+    await setSetting('ticker_auto_include_new', v ? '1' : '0');
   }
 
   async function setTickerItemsPerPage(n: number) {
@@ -362,14 +371,15 @@ export const useSettingsStore = defineStore('settings', () => {
     isPortable, isStoreBuild, loaded, updaterAvailable, error, bossKeyError,
     // 派生配置
     indexCodes, marketOverviewVisible, sectorTopN, tickerVisible, tickerTransparent,
-    tickerClickWakes,
+    tickerClickWakes, tickerAutoIncludeNew,
     tickerItemsPerPage, watchlistColumns, watchlistDefaultSort, colorScheme, bossKey,
     movingAveragePeriods,
     // 动作
     fetchSettings, setSetting, switchDatasource, setThemeMode, toggleAutoLaunch,
     applyColorScheme, applyRemoteSetting,
     setIndexCodes, setMarketOverviewVisible, setSectorTopN, setTickerVisible,
-    setTickerTransparent, setTickerClickWakes, setTickerItemsPerPage, setWatchlistColumns,
+    setTickerTransparent, setTickerClickWakes, setTickerAutoIncludeNew,
+    setTickerItemsPerPage, setWatchlistColumns,
     setWatchlistDefaultSort, setColorScheme, setBossKey,
     setMovingAveragePeriods,
   };

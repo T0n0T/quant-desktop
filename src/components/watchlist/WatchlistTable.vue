@@ -8,7 +8,16 @@ import { useMarketStore } from '@/stores/market';
 import { useSettingsStore } from '@/stores/settings';
 import type { WatchItem } from '@/types';
 import { Inbox, Plus, Upload } from '@lucide/vue';
-import { formatPrice, formatVolume, formatCode, cnCategory, getQuotePrecision } from '@/utils/format';
+import {
+  formatQuoteAmount,
+  formatQuoteChange,
+  formatQuotePrice,
+  formatQuoteVolume,
+  formatUsExtendedMove,
+  formatCode,
+  cnCategory,
+  getQuotePrecision,
+} from '@/utils/format';
 import { columnLabel, type ColumnKey } from '@/utils/prefs';
 import AddStockDialog from './AddStockDialog.vue';
 import ImportWatchlistDialog from './ImportWatchlistDialog.vue';
@@ -71,16 +80,48 @@ const COLUMN_WIDTHS: Record<ColumnKey, number> = {
 };
 
 /** 涨跌色列。统一走 .pct-col 的 up/down 类，配色方案切换时无需改这里。 */
-function coloredPct(row: WatchItem, text: string) {
+function coloredPct(row: WatchItem, text: string, changePct?: number) {
   const q = quoteStore.getQuote(row.code, row.market);
   if (!q) return '--';
-  return h('span', { class: `pct-col ${q.change_pct >= 0 ? 'up' : 'down'}` }, text);
+  const direction = changePct ?? q.change_pct;
+  return h('span', { class: `pct-col ${direction >= 0 ? 'up' : 'down'}` }, text);
+}
+
+function quotePriceCell(row: WatchItem, text: string) {
+  return coloredPct(row, text);
+}
+
+/** 涨跌幅列固定为双行高度，扩展时段标签只出现在美股的数字下方。 */
+function quoteChangeCell(row: WatchItem, text: string, changePct?: number) {
+  const quote = quoteStore.getQuote(row.code, row.market);
+  const move = quote && formatUsExtendedMove(
+    quote.market_phase,
+    quote.market,
+    quote.pre_market_change_pct,
+    quote.post_market_change_pct,
+  );
+  return h('span', { class: 'quote-change-cell' }, [
+    quote ? coloredPct(row, text, changePct) : h('span', '--'),
+    h('span', {
+      class: ['quote-session-label', move ? `phase-${move.phase}` : 'is-empty'],
+      title: move?.text,
+      'aria-hidden': move ? undefined : 'true',
+    }, move?.text ?? ''),
+  ]);
+}
+
+function displayChangePct(row: WatchItem) {
+  const quote = quoteStore.getQuote(row.code, row.market);
+  return quote?.regular_change_pct ?? quote?.change_pct ?? 0;
 }
 
 /** 可排序的数值列。排除 code/name —— 它们是字符串，做减法没有意义。 */
 type NumericColumnKey = 'price' | 'change_pct' | 'change' | 'volume' | 'turnover' | 'turnover_rate';
 
 function sorterOf(key: NumericColumnKey) {
+  if (key === 'change_pct') {
+    return (a: WatchItem, b: WatchItem) => displayChangePct(a) - displayChangePct(b);
+  }
   return (a: WatchItem, b: WatchItem) => {
     const qa = quoteStore.getQuote(a.code, a.market);
     const qb = quoteStore.getQuote(b.code, b.market);
@@ -102,7 +143,7 @@ function buildColumn(key: ColumnKey): DataTableColumns<WatchItem>[number] {
       return {
         title, key, width,
         render: (row) => h('div', { class: 'name-cell' }, [
-          h(MarketTag, { code: row.code, category: cnCategory(row.code) }),
+          h(MarketTag, { code: row.code, market: row.market, category: cnCategory(row.code) }),
           h('span', { class: 'name-text' }, row.name),
         ]),
       };
@@ -112,7 +153,7 @@ function buildColumn(key: ColumnKey): DataTableColumns<WatchItem>[number] {
         render: (row) => {
           const q = quoteStore.getQuote(row.code, row.market);
           if (!q) return '--';
-          return coloredPct(row, formatPrice(q.price, '--', getQuotePrecision(row.code, q.price)));
+          return quotePriceCell(row, formatQuotePrice(q.price, row.market, '--', getQuotePrecision(row.code, q.price)));
         },
       };
     case 'change_pct':
@@ -120,8 +161,12 @@ function buildColumn(key: ColumnKey): DataTableColumns<WatchItem>[number] {
         title, key, width, sorter: sorterOf('change_pct'),
         render: (row) => {
           const q = quoteStore.getQuote(row.code, row.market);
-          if (!q) return '--';
-          return coloredPct(row, `${q.change_pct >= 0 ? '+' : ''}${q.change_pct.toFixed(2)}%`);
+          const changePct = q?.regular_change_pct ?? q?.change_pct;
+          return quoteChangeCell(
+            row,
+            changePct == null ? '--' : `${changePct >= 0 ? '+' : ''}${changePct.toFixed(2)}%`,
+            changePct,
+          );
         },
       };
     case 'change':
@@ -130,8 +175,7 @@ function buildColumn(key: ColumnKey): DataTableColumns<WatchItem>[number] {
         render: (row) => {
           const q = quoteStore.getQuote(row.code, row.market);
           if (!q) return '--';
-          // ETF/LOF 固定 3 位：涨跌额与价格同精度，整分变化也显示 +0.010 而不是 +0.01
-          return coloredPct(row, `${q.change >= 0 ? '+' : ''}${formatPrice(q.change, '--', getQuotePrecision(row.code, q.change))}`);
+          return coloredPct(row, formatQuoteChange(q.change, row.market, '--', getQuotePrecision(row.code, q.change)));
         },
       };
     case 'volume':
@@ -140,7 +184,7 @@ function buildColumn(key: ColumnKey): DataTableColumns<WatchItem>[number] {
         render: (row) => {
           const q = quoteStore.getQuote(row.code, row.market);
           if (!q || q.volume == null) return '--';
-          return h('span', formatVolume(q.volume));
+          return h('span', formatQuoteVolume(q.volume, row.market));
         },
       };
     case 'turnover':
@@ -149,10 +193,7 @@ function buildColumn(key: ColumnKey): DataTableColumns<WatchItem>[number] {
         render: (row) => {
           const q = quoteStore.getQuote(row.code, row.market);
           if (!q || q.turnover == null) return '--';
-          const wan = q.turnover / 10000;
-          if (wan >= 10000) return h('span', `${(wan / 10000).toFixed(2)}亿`);
-          if (wan > 0) return h('span', `${wan.toFixed(2)}万`);
-          return h('span', '0');
+          return h('span', formatQuoteAmount(q.turnover, row.market, '0'));
         },
       };
     case 'turnover_rate':
@@ -553,6 +594,25 @@ defineExpose({ clearSelection: () => { selectedRow.value = null; } });
 :deep(.pct-col) { font-weight: 500; }
 :deep(.pct-col.up) { color: var(--color-up); }
 :deep(.pct-col.down) { color: var(--color-down); }
+:deep(.quote-change-cell) {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+  height: 30px;
+  gap: 1px;
+  line-height: 1;
+}
+:deep(.quote-session-label) {
+  font-size: 9px;
+  color: var(--color-text-tertiary);
+  white-space: nowrap;
+  height: 10px;
+  line-height: 10px;
+}
+:deep(.quote-session-label.phase-pre),
+:deep(.quote-session-label.phase-post) { color: var(--color-info, #4da3ff); }
+:deep(.quote-session-label.is-empty) { visibility: hidden; }
 /* 列渲染内容由 NDataTable 挂载，scoped 样式需用 :deep() 才能生效 */
 :deep(.code-text) {
   font-family: var(--font-mono);

@@ -83,6 +83,68 @@ pub async fn tencent_suggest_search(keyword: &str) -> Result<Vec<StockBrief>, St
     Ok(results)
 }
 
+/// Search Tencent's Chinese-name index for Hong Kong and US symbols.
+///
+/// This is deliberately separate from [`search_cn`].  The latter is also used by
+/// the spreadsheet import path and must keep its A-share-only contract; this
+/// function is only called by the interactive watchlist search.
+pub async fn tencent_foreign_suggest_search(keyword: &str) -> Result<Vec<StockBrief>, String> {
+    let trimmed = keyword.trim();
+    if trimmed.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let mut results = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for query in tencent_foreign_queries(trimmed) {
+        let url = format!(
+            "{}?q={}&t=all",
+            TENCENT_SUGGEST_URL,
+            urlencoding(&query)
+        );
+        let resp = headers::with_browser_headers(
+            super::shared_client().get(&url),
+            "https://gu.qq.com",
+        )
+        .send()
+        .await
+        .map_err(|e| format!("Tencent foreign search request failed: {:#}", e))?;
+        let body = resp
+            .text()
+            .await
+            .map_err(|e| format!("Tencent foreign search read failed: {:#}", e))?;
+        for item in parse_tencent_foreign_smartbox(&body, MAX_RESULTS) {
+            if seen.insert((item.market.clone(), item.code.clone())) {
+                results.push(item);
+            }
+            if results.len() >= MAX_RESULTS {
+                return Ok(results);
+            }
+        }
+    }
+    Ok(results)
+}
+
+fn tencent_foreign_queries(keyword: &str) -> Vec<String> {
+    let upper = keyword.to_ascii_uppercase();
+    let mut queries = vec![keyword.to_string()];
+    if let Some(code) = upper.strip_suffix(".HK") {
+        if !code.is_empty() && code.chars().all(|c| c.is_ascii_digit()) {
+            queries.push(format!("{:0>5}", code));
+        }
+    } else if let Some(code) = upper.strip_suffix(".US") {
+        if !code.is_empty() {
+            queries.push(code.to_string());
+        }
+    } else if upper.len() <= 5 && !upper.is_empty() && upper.chars().all(|c| c.is_ascii_digit()) {
+        queries.push(format!("{:0>5}", upper));
+    } else if upper.contains('-') && upper.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        queries.push(upper.replacen('-', ".", 1));
+    }
+    queries.dedup();
+    queries
+}
+
 /// Parse Tencent smartbox response into StockBrief list.
 ///
 /// Response format:
@@ -156,6 +218,101 @@ fn parse_tencent_smartbox(body: &str, limit: usize) -> Vec<StockBrief> {
     }
 
     results
+}
+
+/// Parse Tencent smartbox entries for HK/US symbols and normalize them to the
+/// Yahoo symbols used by the combined quote adapter.
+///
+/// Tencent returns entries such as `hk~01888~建滔积层板~jtjcb~GP` and
+/// `us~aapl.oq~苹果~pg~GP`.  The exchange suffix in a US code is a Tencent
+/// venue marker, not part of the Yahoo ticker, so `aapl.oq` becomes `AAPL` and
+/// `brk.a.n` becomes `BRK-A`.
+fn parse_tencent_foreign_smartbox(body: &str, limit: usize) -> Vec<StockBrief> {
+    let content = body
+        .find("v_hint=\"")
+        .and_then(|start| {
+            let after = start + 8;
+            let remaining = &body[after..];
+            remaining.find('"').map(|end| &body[after..after + end])
+        })
+        .unwrap_or("");
+
+    if content.is_empty() || content == "N" {
+        return vec![];
+    }
+
+    let mut seen = std::collections::HashSet::new();
+    let mut results = Vec::new();
+    for entry in content.split('^') {
+        if entry.is_empty() || results.len() >= limit {
+            continue;
+        }
+        let fields: Vec<&str> = entry.split('~').collect();
+        if fields.len() < 5 || !matches!(fields[4], "GP" | "GP-A" | "ETF") {
+            continue;
+        }
+
+        let exchange = fields[0].to_ascii_lowercase();
+        let Some((market, code)) = normalize_tencent_foreign_symbol(&exchange, fields[1])
+        else {
+            continue;
+        };
+        let name = unescape_unicode(fields[2]);
+        if name.is_empty() || !seen.insert((market.to_string(), code.clone())) {
+            continue;
+        }
+        results.push(StockBrief {
+            code,
+            market: market.to_string(),
+            name,
+            category: if fields[4] == "ETF" {
+                "ETF".to_string()
+            } else {
+                "GP-A".to_string()
+            },
+        });
+    }
+    results
+}
+
+fn normalize_tencent_foreign_symbol(exchange: &str, raw: &str) -> Option<(&'static str, String)> {
+    match exchange {
+        "hk" => {
+            if raw.is_empty() || !raw.chars().all(|c| c.is_ascii_digit()) || raw.len() > 5 {
+                return None;
+            }
+            let digits = raw.trim_start_matches('0');
+            Some((
+                "HK",
+                format!("{:0>4}.HK", if digits.is_empty() { "0" } else { digits }),
+            ))
+        }
+        "us" => {
+            let mut parts: Vec<&str> = raw.split('.').filter(|part| !part.is_empty()).collect();
+            if parts.is_empty() || parts.len() > 4 || parts.iter().any(|part| {
+                !part.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+            }) {
+                return None;
+            }
+            // Tencent's final segment is usually the venue (`oq`, `n`, `am`, `ps`, ...).
+            // Remove it when recognized, then preserve share-class segments as
+            // Yahoo's hyphen form. A dotted symbol without a venue is retained.
+            if parts.len() > 1 && is_tencent_us_venue(parts.last().unwrap()) {
+                parts.pop();
+            }
+            let code = parts.join("-").to_ascii_uppercase();
+            (!code.is_empty()).then_some(("US", code))
+        }
+        _ => None,
+    }
+}
+
+fn is_tencent_us_venue(value: &str) -> bool {
+    matches!(
+        value.to_ascii_lowercase().as_str(),
+        "am" | "bats" | "n" | "nas" | "ny" | "nyq" | "nys" | "oq" | "otc" | "p" | "pk"
+            | "ps"
+    )
 }
 
 /// Whether a full symbol carries an exchange prefix both adapters can build a
@@ -507,6 +664,35 @@ mod tests {
         // Only GP-A, fund (KJ-HB) filtered out
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].code, "sh600519");
+    }
+
+    #[test]
+    fn test_parse_tencent_foreign_names_and_yahoo_symbols() {
+        let body = "v_hint=\"hk~01888~\\u5efa\\u6ed4\\u79ef\\u5c42\\u677f~jtjcb~GP^us~aapl.oq~\\u82f9\\u679c~pg~GP^us~brk.a.n~\\u4f2f\\u514b\\u5e0c\\u5c14a~bkxe~GP^sh~600519~\\u8d35\\u5dde\\u8305\\u53f0~gzmt~GP-A\"";
+        let results = parse_tencent_foreign_smartbox(body, 20);
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].code, "1888.HK");
+        assert_eq!(results[0].market, "HK");
+        assert_eq!(results[0].name, "建滔积层板");
+        assert_eq!(results[1].code, "AAPL");
+        assert_eq!(results[2].code, "BRK-A");
+    }
+
+    #[test]
+    fn test_parse_tencent_foreign_filters_invalid_and_cn_entries() {
+        let body = "v_hint=\"hk~188888~\\u8d85\\u957f~x~GP^us~aapl.oq~AAPL~pg~KJ^sz~000001~\\u5e73\\u5b89\\u94f6\\u884c~payh~GP-A^us~~\\u7a7a~x~GP\"";
+        let results = parse_tencent_foreign_smartbox(body, 20);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn tencent_foreign_queries_cover_yahoo_symbol_spellings() {
+        assert_eq!(
+            tencent_foreign_queries("1888.HK"),
+            vec!["1888.HK", "01888"]
+        );
+        assert_eq!(tencent_foreign_queries("AAPL.US"), vec!["AAPL.US", "AAPL"]);
+        assert_eq!(tencent_foreign_queries("BRK-A"), vec!["BRK-A", "BRK.A"]);
     }
 
     #[test]

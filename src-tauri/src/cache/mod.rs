@@ -18,6 +18,16 @@ struct CachedQuote {
     _cached_at: std::time::Instant,
 }
 
+fn quotes_for_watchlist(
+    quotes: Vec<Quote>,
+    watchlist_keys: &std::collections::HashSet<(String, String)>,
+) -> Vec<Quote> {
+    quotes
+        .into_iter()
+        .filter(|quote| watchlist_keys.contains(&(quote.market.clone(), quote.code.clone())))
+        .collect()
+}
+
 impl QuoteCache {
     pub fn new(db: Arc<crate::db::Database>) -> Self {
         Self {
@@ -216,6 +226,7 @@ impl Scheduler {
         tauri::async_runtime::spawn(async move {
             let mut last_session = MarketSession::current();
             let mut state = PollingState::new();
+            let mut next_foreign_quote_fetch = std::time::Instant::now();
 
             // Fetch guard — prevents concurrent fetch_once calls from the two loops
             let fetching = Arc::new(AtomicBool::new(false));
@@ -239,7 +250,7 @@ impl Scheduler {
                     let ah = ah_wake.clone();
                     let fg = fg_wake.clone();
                     let handle = tauri::async_runtime::spawn(async move {
-                        Self::fetch_once(&dm, &c, &d, &ah, &fg, true).await
+                        Self::fetch_once(&dm, &c, &d, &ah, &fg, true, true).await
                     });
                     if let Err(join_err) = handle.await {
                         log::warn!("Wakeup fetch task panicked: {}", join_err);
@@ -276,7 +287,20 @@ impl Scheduler {
                 }
 
                 // ── Fetch data ──
-                let outcome = Self::fetch_once(&data_manager, &cache, &db, &app_handle, &fetching, false).await;
+                let include_foreign = std::time::Instant::now() >= next_foreign_quote_fetch;
+                let outcome = Self::fetch_once(
+                    &data_manager,
+                    &cache,
+                    &db,
+                    &app_handle,
+                    &fetching,
+                    false,
+                    include_foreign,
+                )
+                .await;
+                if include_foreign {
+                    next_foreign_quote_fetch = std::time::Instant::now() + Duration::from_secs(60);
+                }
 
                 // ── Adaptive interval ──
                 // Adaptive polling (probe → normal → idle) is only used during
@@ -308,6 +332,7 @@ impl Scheduler {
         app_handle: &tauri::AppHandle,
         fetching: &AtomicBool,
         force: bool,
+        include_foreign: bool,
     ) -> Option<FetchOutcome> {
         // Skip if a fetch is already in progress (prevents duplicate API calls)
         if fetching.swap(true, Ordering::AcqRel) {
@@ -338,13 +363,23 @@ impl Scheduler {
             }
         };
 
-        // 2. Group by market
-        let mut cn_codes: Vec<String> = Vec::new();
+        // 2. Group by market. Foreign markets use a slower independent cadence
+        // so the A-share two-second poll does not hammer Yahoo Finance.
+        let mut market_codes = std::collections::HashMap::<String, Vec<String>>::new();
         for (code, market) in &codes {
-            if market == "CN" {
-                cn_codes.push(code.clone());
+            let market = market.to_ascii_uppercase();
+            if matches!(market.as_str(), "CN" | "HK" | "US") {
+                market_codes.entry(market).or_default().push(code.clone());
             }
         }
+        let watchlist_keys: std::collections::HashSet<(String, String)> = market_codes
+            .iter()
+            .flat_map(|(market, codes)| {
+                codes
+                    .iter()
+                    .map(move |code| (market.clone(), code.clone()))
+            })
+            .collect();
 
         // 3. When market is Closed (after 15:00 or weekend), emit cached quotes
         //    immediately for instant display (if cache fully covers the watchlist),
@@ -353,9 +388,15 @@ impl Scheduler {
         if session == MarketSession::Closed && !force {
             let cached = cache.get_all_quotes();
             if !cached.is_empty() {
-                // Check whether cached quotes cover every watchlist code
-                let all_cached = cn_codes.iter().all(|code| {
-                    cached.iter().any(|q| q.code == *code && q.market == "CN")
+                // Only require foreign quotes when this cycle is due to refresh them.
+                let required = market_codes
+                    .iter()
+                    .filter(|(market, _)| *market == "CN" || include_foreign)
+                    .flat_map(|(market, codes)| {
+                        codes.iter().map(move |code| (code.as_str(), market.as_str()))
+                    });
+                let all_cached = required.into_iter().all(|(code, market)| {
+                    cached.iter().any(|q| q.code == code && q.market == market)
                 });
                 if all_cached {
                     // Emit cached data first so the UI appears instantly; the
@@ -373,52 +414,68 @@ impl Scheduler {
             // closing data, consistent with how indices are always refreshed.
         }
 
-        if !cn_codes.is_empty() {
-            if let Some(source) = manager.active_source() {
-                // Snapshot prices before fetch for change detection
-                let prices_before = cache.get_price_snapshot();
-
-                match source.fetch_realtime(&cn_codes, "CN").await {
+        let cn_keys: std::collections::HashSet<String> = market_codes
+            .get("CN")
+            .into_iter()
+            .flatten()
+            .map(|code| format!("CN:{code}"))
+            .collect();
+        let mut prices_before = cache.get_price_snapshot();
+        prices_before.retain(|key, _| cn_keys.contains(key));
+        let mut cn_changed = None;
+        if let Some(source) = manager.active_source() {
+            for market in ["CN", "HK", "US"] {
+                if market != "CN" && !include_foreign {
+                    continue;
+                }
+                let Some(codes_for_market) = market_codes.get(market) else {
+                    continue;
+                };
+                if codes_for_market.is_empty() || !source.supports_market(market) {
+                    continue;
+                }
+                match source.fetch_realtime(codes_for_market, market).await {
                     Ok(quotes) => {
                         cache.update_quotes_memory(&quotes);
-                        if let Err(e) = app_handle.emit("quotes-updated", &quotes) {
-                            log::warn!("Failed to emit quotes-updated: {}", e);
+                        if !quotes.is_empty() {
+                            // The frontend treats each event as a complete snapshot.  Keep
+                            // quotes from the other markets when CN/HK/US are fetched on
+                            // separate cadences.
+                            let snapshot =
+                                quotes_for_watchlist(cache.get_all_quotes(), &watchlist_keys);
+                            if let Err(e) = app_handle.emit("quotes-updated", &snapshot) {
+                                log::warn!("Failed to emit quotes-updated: {}", e);
+                            }
+                            let cache_for_persist = cache.clone();
+                            let quotes_for_db = quotes.clone();
+                            tokio::task::spawn_blocking(move || {
+                                cache_for_persist.persist_quotes(&quotes_for_db);
+                            });
                         }
-                        let cache_for_persist = cache.clone();
-                        let quotes_for_db = quotes.to_vec();
-                        tokio::task::spawn_blocking(move || {
-                            cache_for_persist.persist_quotes(&quotes_for_db);
-                        });
-
-                        // Compare: did any price actually change?
-                        let changed = Self::any_price_changed(&prices_before, &quotes);
-
-                        Self::fetch_and_emit_indices(manager, cache, app_handle).await;
-                        return Some(FetchOutcome { prices_changed: changed });
+                        if market == "CN" {
+                            cn_changed = Some(Self::any_price_changed(&prices_before, &quotes));
+                        }
                     }
                     Err(e) => {
-                        // 交易时段每 2s 一次；断网时逐次记 warn 会把日志刷满，
-                        // 五分钟只留一条（被抑制的仍可在 QUANT_LOG=debug 下看到）。
-                        crate::logging::warn_throttled("scheduler.quotes", || {
-                            format!("Quote fetch failed (will retry): {}", e)
-                        });
-                        let cached = cache.get_all_quotes();
-                        if !cached.is_empty() {
-                            if let Err(e) = app_handle.emit("quotes-updated", &cached) {
-                                log::warn!("Failed to emit quotes-updated (fallback): {}", e);
+                        crate::logging::warn_throttled(
+                            &format!("scheduler.quotes.{}", market.to_ascii_lowercase()),
+                            || format!("{} quote fetch failed (will retry): {}", market, e),
+                        );
+                        if market == "CN" {
+                            let cached = cache.get_all_quotes();
+                            if !cached.is_empty() {
+                                if let Err(e) = app_handle.emit("quotes-updated", &cached) {
+                                    log::warn!("Failed to emit quotes-updated (fallback): {}", e);
+                                }
                             }
                         }
-                        // Fetch failed — we can't determine price change, so return None
-                        // to keep the state machine from making a false decision.
-                        Self::fetch_and_emit_indices(manager, cache, app_handle).await;
-                        return None;
                     }
                 }
             }
         }
 
         Self::fetch_and_emit_indices(manager, cache, app_handle).await;
-        None
+        cn_changed.map(|prices_changed| FetchOutcome { prices_changed })
     }
 
     /// Check whether any quote price differs from the snapshot.
@@ -485,5 +542,55 @@ struct FetchGuard<'a>(&'a AtomicBool);
 impl<'a> Drop for FetchGuard<'a> {
     fn drop(&mut self) {
         self.0.store(false, Ordering::Release);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::quotes_for_watchlist;
+    use crate::domain::Quote;
+    use std::collections::HashSet;
+
+    fn quote(market: &str, code: &str) -> Quote {
+        Quote {
+            code: code.to_string(),
+            market: market.to_string(),
+            name: code.to_string(),
+            price: 1.0,
+            change: 0.0,
+            change_pct: 0.0,
+            open: 1.0,
+            high: 1.0,
+            low: 1.0,
+            volume: 0,
+            turnover: 0.0,
+            turnover_rate: None,
+            timestamp: 0,
+            market_phase: "regular".to_string(),
+            regular_change_pct: None,
+            pre_market_change_pct: None,
+            post_market_change_pct: None,
+        }
+    }
+
+    #[test]
+    fn quote_snapshot_keeps_all_watched_markets_and_drops_stale_rows() {
+        let keys = HashSet::from([
+            ("CN".to_string(), "sh600519".to_string()),
+            ("HK".to_string(), "0700.HK".to_string()),
+        ]);
+        let snapshot = quotes_for_watchlist(
+            vec![
+                quote("CN", "sh600519"),
+                quote("HK", "0700.HK"),
+                quote("US", "AAPL"),
+            ],
+            &keys,
+        );
+
+        assert_eq!(snapshot.len(), 2);
+        assert!(snapshot.iter().any(|q| q.market == "CN"));
+        assert!(snapshot.iter().any(|q| q.market == "HK"));
+        assert!(!snapshot.iter().any(|q| q.market == "US"));
     }
 }

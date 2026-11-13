@@ -14,6 +14,61 @@
 /** 一个交易日的分钟数：09:30–11:30 + 13:00–15:00 = 240 */
 export const SESSION_MINUTES = 240;
 
+export type MinuteMarket = 'CN' | 'HK' | 'US' | string;
+
+interface SessionLayout {
+  total: number;
+  morningStart: number;
+  morningEnd: number;
+  afternoonStart: number;
+  afternoonEnd: number;
+  ticks: readonly { minute: number; text: string }[];
+}
+
+function sessionLayout(market: MinuteMarket): SessionLayout {
+  switch (market.toUpperCase()) {
+    case 'HK':
+      return {
+        total: 330,
+        morningStart: 9 * 60 + 30,
+        morningEnd: 12 * 60,
+        afternoonStart: 13 * 60,
+        afternoonEnd: 16 * 60,
+        ticks: [
+          { minute: 0, text: '09:30' },
+          { minute: 90, text: '11:00' },
+          { minute: 150, text: '12:00/13:00' },
+          { minute: 240, text: '14:30' },
+          { minute: 330, text: '16:00' },
+        ],
+      };
+    case 'US':
+      return {
+        total: 390,
+        morningStart: 9 * 60 + 30,
+        morningEnd: 16 * 60,
+        afternoonStart: 16 * 60,
+        afternoonEnd: 16 * 60,
+        ticks: [
+          { minute: 0, text: '09:30' },
+          { minute: 90, text: '11:00' },
+          { minute: 180, text: '12:30' },
+          { minute: 270, text: '14:00' },
+          { minute: 390, text: '16:00' },
+        ],
+      };
+    default:
+      return {
+        total: SESSION_MINUTES,
+        morningStart: 9 * 60 + 30,
+        morningEnd: 11 * 60 + 30,
+        afternoonStart: 13 * 60,
+        afternoonEnd: 15 * 60,
+        ticks: SESSION_TICKS,
+      };
+  }
+}
+
 /**
  * 首尾刻度内缩的像素。x 轴刻度文字在 klinecharts 里是居中对齐、不做贴边避让的
  * （十字光标文字才有避让），不内缩的话 09:30 / 15:00 会被画布裁掉半个字。
@@ -21,15 +76,16 @@ export const SESSION_MINUTES = 240;
 const EDGE_INSET = 16;
 
 /** 交易时刻 → 当日已开盘分钟数（午休 11:30–13:00 不计），钳到 [0, 240]。 */
-export function tradingMinutesOfDay(date: Date): number {
+export function tradingMinutesOfDay(date: Date, market: MinuteMarket = 'CN'): number {
+  const session = sessionLayout(market);
   const minutes = date.getHours() * 60 + date.getMinutes();
-  const open = 9 * 60 + 30;
-  const morningMinutes = 120; // 09:30–11:30
-  if (minutes <= open) return 0;
-  if (minutes <= open + morningMinutes) return minutes - open;
-  if (minutes <= 13 * 60) return morningMinutes;
-  if (minutes <= 15 * 60) return morningMinutes + (minutes - 13 * 60);
-  return SESSION_MINUTES;
+  if (minutes <= session.morningStart) return 0;
+  if (minutes <= session.morningEnd) return minutes - session.morningStart;
+  if (minutes <= session.afternoonStart) return session.morningEnd - session.morningStart;
+  if (minutes <= session.afternoonEnd) {
+    return session.morningEnd - session.morningStart + (minutes - session.afternoonStart);
+  }
+  return session.total;
 }
 
 /**
@@ -37,13 +93,16 @@ export function tradingMinutesOfDay(date: Date): number {
  * 取相邻 bar 交易日分钟差的中位数，而不是首尾均值：停牌、缺数据造成的空洞不该把整条横轴拉宽。
  * 交易日分钟差里午休本来就被抹平，正常的 11:30→13:01 相邻差仍是 1 分钟。
  */
-export function inferBarMinutes(bars: readonly { timestamp: number }[]): number {
+export function inferBarMinutes(
+  bars: readonly { timestamp: number }[],
+  market: MinuteMarket = 'CN',
+): number {
   if (bars.length < 2) return 1;
   const diffs: number[] = [];
   for (let i = 1; i < bars.length; i++) {
     const diff =
-      tradingMinutesOfDay(new Date(bars[i].timestamp)) -
-      tradingMinutesOfDay(new Date(bars[i - 1].timestamp));
+      tradingMinutesOfDay(new Date(bars[i].timestamp), market) -
+      tradingMinutesOfDay(new Date(bars[i - 1].timestamp), market);
     if (diff > 0) diffs.push(diff);
   }
   if (diffs.length === 0) return 1;
@@ -70,9 +129,11 @@ export interface MinuteAxisLayout {
 export function minuteAxisLayout(
   plotWidth: number,
   bars: readonly { timestamp: number }[],
+  market: MinuteMarket = 'CN',
 ): MinuteAxisLayout {
-  const barMinutes = inferBarMinutes(bars);
-  const slots = Math.max(1, Math.round(SESSION_MINUTES / barMinutes));
+  const session = sessionLayout(market);
+  const barMinutes = inferBarMinutes(bars, market);
+  const slots = Math.max(1, Math.round(session.total / barMinutes));
   const barSpace = plotWidth > 0 ? plotWidth / slots : 0;
   return {
     slots,
@@ -100,9 +161,13 @@ export const MIN_BAR_SPACE = 1;
  * 整条横轴都得让给 klinecharts 自己排：先把柱宽缩到 MIN_BAR_SPACE 以下是不可能的，
  * 硬按 `图宽 / 格子数` 算刻度只会得到一串被钳在右缘、叠在一起的时间。
  */
-export function sessionFits(plotWidth: number, barMinutes: number): boolean {
+export function sessionFits(
+  plotWidth: number,
+  barMinutes: number,
+  market: MinuteMarket = 'CN',
+): boolean {
   if (!(plotWidth > 0) || !(barMinutes > 0)) return false;
-  return plotWidth / (SESSION_MINUTES / barMinutes) >= MIN_BAR_SPACE;
+  return plotWidth / (sessionLayout(market).total / barMinutes) >= MIN_BAR_SPACE;
 }
 
 /** 分时图横轴的固定刻度，与常见行情软件一致 */
@@ -118,10 +183,15 @@ export const SESSION_TICKS: readonly { minute: number; text: string }[] = [
  * 把固定刻度映射成像素坐标。用图表**当前**的 bar 宽而非理论值 —— setBarSpace 可能被
  * barSpaceLimit 夹住，那时刻度得跟着实际柱宽走。
  */
-export function sessionTicks(plotWidth: number, barSpace: number, barMinutes: number): MinuteTick[] {
+export function sessionTicks(
+  plotWidth: number,
+  barSpace: number,
+  barMinutes: number,
+  market: MinuteMarket = 'CN',
+): MinuteTick[] {
   if (!(plotWidth > 0) || !(barSpace > 0) || !(barMinutes > 0)) return [];
   const inset = Math.min(EDGE_INSET, plotWidth / 4);
-  return SESSION_TICKS.map(({ minute, text }) => ({
+  return sessionLayout(market).ticks.map(({ minute, text }) => ({
     coord: Math.min(Math.max(barSpace * (minute / barMinutes + 0.5), inset), plotWidth - inset),
     value: minute,
     text,

@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { formatIndexCode, formatTurnoverDelta, formatPrice, getQuotePrecision } from './format';
+import {
+  formatIndexCode,
+  formatTurnoverDelta,
+  formatPrice,
+  formatQuoteAmount,
+  formatQuoteChange,
+  formatQuotePrice,
+  formatQuoteVolume,
+  formatMarketPhase,
+  formatUsExtendedMove,
+  getQuotePrecision,
+} from './format';
 
 // 「较昨同期」的增量界面会按应用配色上色（放量=涨色、缩量=跌色，随 cn/us
 // 翻转），但符号仍必须留在文字里 —— 颜色不是唯一信号。这里把「符号 + 取整到亿
@@ -52,5 +63,47 @@ describe('getQuotePrecision / formatPrice', () => {
     expect(getQuotePrecision('sz000001', 0.01)).toBe(2);
     expect(getQuotePrecision('sh113001', 123.456)).toBe(3);
     expect(formatPrice(123.456, '--', getQuotePrecision('sh113001', 123.456))).toBe('123.456');
+  });
+});
+
+describe('foreign quote formatting', () => {
+  it('keeps HKD and USD visible in price and change values', () => {
+    expect(formatQuotePrice(123.4, 'HK')).toBe('HK$123.40');
+    expect(formatQuotePrice(123.4, 'US')).toBe('$123.40');
+    expect(formatQuoteChange(-1.25, 'US')).toBe('-$1.25');
+  });
+
+  it('keeps foreign volume in shares and amount in the quote currency', () => {
+    expect(formatQuoteVolume(1234, 'US')).toBe('1,234股');
+    expect(formatQuoteVolume(123456, 'HK')).toBe('12.35万股');
+    expect(formatQuoteAmount(1.25e8, 'US')).toBe('$1.25亿');
+    expect(formatQuoteAmount(1.25e8, 'CN')).toBe('1.25亿');
+  });
+});
+
+describe('market phase labels', () => {
+  it('labels US pre-market and after-hours sessions', () => {
+    expect(formatMarketPhase('pre', 'US')).toBe('盘前');
+    expect(formatMarketPhase('pre_no_data', 'US')).toBe('盘前暂无报价');
+    expect(formatMarketPhase('regular', 'US')).toBe('正常交易');
+    expect(formatMarketPhase('post', 'US')).toBe('盘后');
+    expect(formatMarketPhase('post_no_data', 'US')).toBe('盘后暂无报价');
+    expect(formatMarketPhase('overnight', 'US')).toBe('已收盘');
+    expect(formatMarketPhase('closed', 'US')).toBe('已收盘');
+  });
+
+  it('formats only US pre-market and after-hours changes', () => {
+    expect(formatUsExtendedMove('pre', 'US', 1.25, null)).toEqual({
+      phase: 'pre', text: '盘前 +1.25%',
+    });
+    expect(formatUsExtendedMove('regular', 'US', -0.4, null)).toEqual({
+      phase: 'pre', text: '盘前 -0.40%',
+    });
+    expect(formatUsExtendedMove('post_no_data', 'US', null, null)).toEqual({
+      phase: 'post', text: '盘后暂无报价',
+    });
+    expect(formatUsExtendedMove('overnight', 'US', 1.25, null)).toBeNull();
+    expect(formatUsExtendedMove('pre', 'HK', 1.25, null)).toBeNull();
+    expect(formatUsExtendedMove('closed', 'US', null, null)).toBeNull();
   });
 });

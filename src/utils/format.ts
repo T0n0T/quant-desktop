@@ -54,6 +54,120 @@ export function formatPrice(
   return price.toFixed(precision ?? getPricePrecision(price));
 }
 
+export function currencyPrefix(market: string): string {
+  if (market === 'HK') return 'HK$';
+  if (market === 'US') return '$';
+  return '';
+}
+
+export function formatQuotePrice(
+  price: number | null | undefined,
+  market: string,
+  fallback = '--',
+  precision?: number,
+): string {
+  if (price == null || isNaN(price)) return fallback;
+  return `${currencyPrefix(market)}${formatPrice(price, fallback, precision)}`;
+}
+
+export function formatQuoteChange(
+  change: number | null | undefined,
+  market: string,
+  fallback = '--',
+  precision?: number,
+): string {
+  if (change == null || isNaN(change)) return fallback;
+  const sign = change >= 0 ? '+' : '-';
+  return `${sign}${currencyPrefix(market)}${formatPrice(Math.abs(change), fallback, precision)}`;
+}
+
+export function formatQuoteVolume(volume: number | null | undefined, market: string, fallback = '--'): string {
+  if (volume == null || isNaN(volume)) return fallback;
+  if (market === 'CN') return formatVolume(volume, fallback);
+  if (volume >= 1e8) return `${(volume / 1e8).toFixed(2)}亿股`;
+  if (volume >= 1e4) return `${(volume / 1e4).toFixed(2)}万股`;
+  return `${Math.round(volume).toLocaleString()}股`;
+}
+
+export function formatQuoteAmount(amount: number | null | undefined, market: string, fallback = '--'): string {
+  if (market === 'CN') return formatAmount(amount, fallback);
+  if (amount == null || isNaN(amount) || amount <= 0) return fallback;
+  const unit = amount >= 1e8
+    ? `${(amount / 1e8).toFixed(2)}亿`
+    : amount >= 1e4
+      ? `${(amount / 1e4).toFixed(2)}万`
+      : amount.toFixed(0);
+  return `${currencyPrefix(market)}${unit}`;
+}
+
+/** 报价所属交易时段，盘前/盘后暂无报价时明确提示数据不可用。 */
+export function formatMarketPhase(phase: string | null | undefined, market: string): string {
+  if (market === 'US' || market === 'HK') {
+    switch (phase) {
+      case 'pre': return '盘前';
+      case 'pre_no_data': return '盘前暂无报价';
+      case 'post': return '盘后';
+      case 'post_no_data': return '盘后暂无报价';
+      case 'overnight':
+      case 'closed': return '已收盘';
+      default: return '正常交易';
+    }
+  }
+  return '正常交易';
+}
+
+export interface UsExtendedMove {
+  phase: 'pre' | 'post';
+  text: string;
+}
+
+/** 美股扩展时段副标，常规交易时保留当日盘前涨幅作为参考。 */
+export function formatUsExtendedMove(
+  phase: string | null | undefined,
+  market: string,
+  preMarketChangePct: number | null | undefined,
+  postMarketChangePct: number | null | undefined,
+): UsExtendedMove | null {
+  if (market !== 'US') return null;
+
+  let session: UsExtendedMove['phase'] | null = null;
+  let changePct: number | null | undefined;
+  let unavailableText: string | null = null;
+  switch (phase) {
+    case 'pre':
+      session = 'pre';
+      changePct = preMarketChangePct;
+      unavailableText = '盘前暂无报价';
+      break;
+    case 'pre_no_data':
+      return { phase: 'pre', text: '盘前暂无报价' };
+    case 'regular':
+      if (preMarketChangePct == null) return null;
+      session = 'pre';
+      changePct = preMarketChangePct;
+      break;
+    case 'post':
+      session = 'post';
+      changePct = postMarketChangePct;
+      unavailableText = '盘后暂无报价';
+      break;
+    case 'post_no_data':
+      return { phase: 'post', text: '盘后暂无报价' };
+    default:
+      return null;
+  }
+
+  if (changePct == null || Number.isNaN(changePct)) {
+    return unavailableText && session ? { phase: session, text: unavailableText } : null;
+  }
+  if (!session) return null;
+  const label = session === 'pre' ? '盘前' : '盘后';
+  return {
+    phase: session,
+    text: `${label} ${changePct >= 0 ? '+' : ''}${changePct.toFixed(2)}%`,
+  };
+}
+
 /**
  * 报价显示精度 —— 按**标的类别**而不是数值决定。
  *

@@ -8,7 +8,7 @@ import { useQuoteStore } from '@/stores/quote';
 import { useWatchlistStore } from '@/stores/watchlist';
 import { useSettingsStore } from '@/stores/settings';
 import { useTickerWindowHeight } from '@/composables/useTickerWindowHeight';
-import { formatPrice } from '@/utils/format';
+import { formatUsExtendedMove, formatQuotePrice } from '@/utils/format';
 import { nextPageStart, windowItems } from '@/utils/paging';
 
 const quoteStore = useQuoteStore();
@@ -168,8 +168,16 @@ const tickerItems = computed(() =>
     return {
       name: item.name,
       code: item.code,
+      market: item.market,
       price: q?.price ?? null,
-      changePct: q?.change_pct ?? null,
+      priceChangePct: q?.change_pct ?? null,
+      changePct: q?.regular_change_pct ?? q?.change_pct ?? null,
+      move: q ? formatUsExtendedMove(
+        q.market_phase,
+        q.market,
+        q.pre_market_change_pct,
+        q.post_market_change_pct,
+      ) : null,
     };
   })
 );
@@ -355,19 +363,28 @@ async function handleClick(event: MouseEvent | KeyboardEvent) {
         </div>
       </template>
       <template v-else-if="visibleItems.length > 0">
-        <div v-for="item in visibleItems" :key="item.code" class="ticker-row">
+        <div v-for="item in visibleItems" :key="`${item.market}:${item.code}`" class="ticker-row">
           <span class="ticker-name">{{ item.name }}</span>
           <span
             v-if="item.price !== null"
             class="ticker-price tabular-nums"
-            :class="item.changePct !== null && item.changePct >= 0 ? 'up' : 'down'"
-          >{{ formatPrice(item.price) }}</span>
+            :class="item.priceChangePct !== null && item.priceChangePct >= 0 ? 'up' : 'down'"
+          >{{ formatQuotePrice(item.price, item.market) }}</span>
           <span v-else class="ticker-na">--</span>
-          <span
-            v-if="item.changePct !== null"
-            class="ticker-change tabular-nums"
-            :class="item.changePct >= 0 ? 'up' : 'down'"
-          >{{ item.changePct >= 0 ? '+' : '' }}{{ item.changePct.toFixed(2) }}%</span>
+          <span class="ticker-change-column">
+            <span
+              v-if="item.changePct !== null"
+              class="ticker-change tabular-nums"
+              :class="item.changePct >= 0 ? 'up' : 'down'"
+            >{{ item.changePct >= 0 ? '+' : '' }}{{ item.changePct.toFixed(2) }}%</span>
+            <span v-else class="ticker-change ticker-na">--</span>
+            <span
+              class="ticker-extended-move"
+              :class="item.move ? `phase-${item.move.phase}` : 'is-empty'"
+              :title="item.move?.text"
+              :aria-hidden="item.move ? undefined : 'true'"
+            >{{ item.move?.text ?? '' }}</span>
+          </span>
         </div>
       </template>
       <!-- 区分两种为空：诚然没有自选，与有自选但全部关闭了播报 -->
@@ -408,7 +425,9 @@ async function handleClick(event: MouseEvent | KeyboardEvent) {
   display: flex;
   align-items: center;
   gap: var(--space-1);
-  line-height: 1.4;
+  height: 32px;
+  flex: 0 0 32px;
+  line-height: 1;
 }
 .ticker-name {
   flex: 1;
@@ -425,7 +444,7 @@ async function handleClick(event: MouseEvent | KeyboardEvent) {
   font-weight: var(--font-weight-semibold);
   font-size: var(--text-xs);
   font-family: var(--font-mono);
-  width: 46px;
+  width: 58px;
   text-align: right;
   color: var(--color-text-primary);
 }
@@ -434,16 +453,39 @@ async function handleClick(event: MouseEvent | KeyboardEvent) {
   color: var(--color-text-tertiary);
   font-size: var(--text-xs);
   font-family: var(--font-mono);
-  width: 46px;
+  width: 58px;
   text-align: right;
+}
+.ticker-change-column {
+  display: flex;
+  flex: 0 0 74px;
+  height: 26px;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 1px;
 }
 .ticker-change {
   flex-shrink: 0;
   font-size: var(--text-xs);
   font-family: var(--font-mono);
-  width: 48px;
+  width: 74px;
   text-align: right;
 }
+.ticker-extended-move {
+  width: 74px;
+  height: 10px;
+  overflow: hidden;
+  color: var(--color-text-tertiary);
+  font-size: 9px;
+  line-height: 10px;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ticker-extended-move.phase-pre,
+.ticker-extended-move.phase-post { color: var(--color-info, #4da3ff); }
+.ticker-extended-move.is-empty { visibility: hidden; }
 .up { color: var(--color-up); }
 .down { color: var(--color-down); }
 .ticker-empty {

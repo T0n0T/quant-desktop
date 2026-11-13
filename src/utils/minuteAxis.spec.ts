@@ -54,6 +54,13 @@ describe('tradingMinutesOfDay', () => {
     expect(tradingMinutesOfDay(new Date(2026, 8, 24, 15, 0))).toBe(SESSION_MINUTES);
     expect(tradingMinutesOfDay(new Date(2026, 8, 24, 16, 0))).toBe(SESSION_MINUTES);
   });
+
+  it('按港股和美股的本地交易时段计数', () => {
+    expect(tradingMinutesOfDay(new Date(2026, 8, 24, 12, 30), 'HK')).toBe(150);
+    expect(tradingMinutesOfDay(new Date(2026, 8, 24, 13, 0), 'HK')).toBe(150);
+    expect(tradingMinutesOfDay(new Date(2026, 8, 24, 16, 0), 'HK')).toBe(330);
+    expect(tradingMinutesOfDay(new Date(2026, 8, 24, 16, 0), 'US')).toBe(390);
+  });
 });
 
 describe('inferBarMinutes', () => {
@@ -137,6 +144,15 @@ describe('sessionTicks', () => {
     expect(ticks.map((t) => t.text)).toEqual(SESSION_TICKS.map((t) => t.text));
     expect(ticks[0].coord).toBeGreaterThanOrEqual(16); // 09:30 内缩，否则半个字被裁掉
     expect(ticks[ticks.length - 1].coord).toBeLessThanOrEqual(720 - 16); // 15:00 同理
+  });
+
+  it('港股和美股使用各自的收盘刻度', () => {
+    expect(sessionTicks(660, 2, 1, 'HK').map((tick) => tick.text)).toEqual([
+      '09:30', '11:00', '12:00/13:00', '14:30', '16:00',
+    ]);
+    expect(sessionTicks(780, 2, 1, 'US').map((tick) => tick.text)).toEqual([
+      '09:30', '11:00', '12:30', '14:00', '16:00',
+    ]);
   });
 
   it('刻度位置随时间单调递增，中间刻度落在对应时刻的格子上', () => {

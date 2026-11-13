@@ -199,6 +199,12 @@ pub trait DataSource: Send + Sync {
     /// Human-readable display name
     fn display_name(&self) -> &str;
 
+    /// Whether this source can return data for a market.
+    /// Existing adapters are mainland-only unless they opt in explicitly.
+    fn supports_market(&self, market: &str) -> bool {
+        market.eq_ignore_ascii_case("CN")
+    }
+
     /// Fetch real-time quotes (batch)
     async fn fetch_realtime(
         &self,
@@ -463,3 +469,4 @@ pub mod market;
 pub mod market_clock;
 pub mod search;
 pub mod headers;
+pub mod yahoo_tdx;

@@ -41,7 +41,7 @@ useEscapeKey(() => emit('close'));
     <div class="detail-header">
       <div class="detail-title">
         <span class="detail-name-cell">
-          <MarketTag :code="item.code" :category="cnCategory(item.code)" />
+          <MarketTag :code="item.code" :market="item.market" :category="cnCategory(item.code)" />
           <span class="detail-name">{{ item.name }}</span>
         </span>
         <span class="detail-code">{{ formatCode(item.code) }}</span>
@@ -52,7 +52,7 @@ useEscapeKey(() => emit('close'));
     <div class="detail-content">
       <div class="detail-left">
         <StockSummary v-if="quote" :quote="quote" />
-        <DepthPanel :code="item.code" :market="item.market" />
+        <DepthPanel v-if="item.market === 'CN'" :code="item.code" :market="item.market" />
       </div>
       <div class="detail-right">
         <div class="chart-toolbar">
