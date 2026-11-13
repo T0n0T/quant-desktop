@@ -14,6 +14,9 @@ export interface Quote {
   turnover_rate: number | null;
   timestamp: number;
   market_phase: 'pre' | 'pre_no_data' | 'regular' | 'post' | 'post_no_data' | 'overnight' | 'closed';
+  regular_change_pct?: number | null;
+  pre_market_change_pct?: number | null;
+  post_market_change_pct?: number | null;
 }
 
 export interface IndexQuote {

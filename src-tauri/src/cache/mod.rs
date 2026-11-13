@@ -567,6 +567,9 @@ mod tests {
             turnover_rate: None,
             timestamp: 0,
             market_phase: "regular".to_string(),
+            regular_change_pct: None,
+            pre_market_change_pct: None,
+            post_market_change_pct: None,
         }
     }
 

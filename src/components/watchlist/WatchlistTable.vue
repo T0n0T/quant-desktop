@@ -13,7 +13,7 @@ import {
   formatQuoteChange,
   formatQuotePrice,
   formatQuoteVolume,
-  formatMarketPhase,
+  formatUsExtendedMove,
   formatCode,
   cnCategory,
   getQuotePrecision,
@@ -80,32 +80,48 @@ const COLUMN_WIDTHS: Record<ColumnKey, number> = {
 };
 
 /** 涨跌色列。统一走 .pct-col 的 up/down 类，配色方案切换时无需改这里。 */
-function coloredPct(row: WatchItem, text: string) {
+function coloredPct(row: WatchItem, text: string, changePct?: number) {
   const q = quoteStore.getQuote(row.code, row.market);
   if (!q) return '--';
-  return h('span', { class: `pct-col ${q.change_pct >= 0 ? 'up' : 'down'}` }, text);
+  const direction = changePct ?? q.change_pct;
+  return h('span', { class: `pct-col ${direction >= 0 ? 'up' : 'down'}` }, text);
 }
 
 function quotePriceCell(row: WatchItem, text: string) {
+  return coloredPct(row, text);
+}
+
+/** 涨跌幅列固定为双行高度，扩展时段标签只出现在美股的数字下方。 */
+function quoteChangeCell(row: WatchItem, text: string, changePct?: number) {
   const quote = quoteStore.getQuote(row.code, row.market);
-  if (!quote) return '--';
-  const value = coloredPct(row, text);
-  if ((row.market !== 'US' && row.market !== 'HK') || quote.market_phase === 'regular') {
-    return value;
-  }
-  return h('span', { class: 'quote-price-cell' }, [
-    value,
+  const move = quote && formatUsExtendedMove(
+    quote.market_phase,
+    quote.market,
+    quote.pre_market_change_pct,
+    quote.post_market_change_pct,
+  );
+  return h('span', { class: 'quote-change-cell' }, [
+    quote ? coloredPct(row, text, changePct) : h('span', '--'),
     h('span', {
-      class: ['quote-market-phase', `phase-${quote.market_phase}`],
-      title: formatMarketPhase(quote.market_phase, quote.market),
-    }, formatMarketPhase(quote.market_phase, quote.market)),
+      class: ['quote-session-label', move ? `phase-${move.phase}` : 'is-empty'],
+      title: move?.text,
+      'aria-hidden': move ? undefined : 'true',
+    }, move?.text ?? ''),
   ]);
+}
+
+function displayChangePct(row: WatchItem) {
+  const quote = quoteStore.getQuote(row.code, row.market);
+  return quote?.regular_change_pct ?? quote?.change_pct ?? 0;
 }
 
 /** 可排序的数值列。排除 code/name —— 它们是字符串，做减法没有意义。 */
 type NumericColumnKey = 'price' | 'change_pct' | 'change' | 'volume' | 'turnover' | 'turnover_rate';
 
 function sorterOf(key: NumericColumnKey) {
+  if (key === 'change_pct') {
+    return (a: WatchItem, b: WatchItem) => displayChangePct(a) - displayChangePct(b);
+  }
   return (a: WatchItem, b: WatchItem) => {
     const qa = quoteStore.getQuote(a.code, a.market);
     const qb = quoteStore.getQuote(b.code, b.market);
@@ -145,8 +161,12 @@ function buildColumn(key: ColumnKey): DataTableColumns<WatchItem>[number] {
         title, key, width, sorter: sorterOf('change_pct'),
         render: (row) => {
           const q = quoteStore.getQuote(row.code, row.market);
-          if (!q) return '--';
-          return coloredPct(row, `${q.change_pct >= 0 ? '+' : ''}${q.change_pct.toFixed(2)}%`);
+          const changePct = q?.regular_change_pct ?? q?.change_pct;
+          return quoteChangeCell(
+            row,
+            changePct == null ? '--' : `${changePct >= 0 ? '+' : ''}${changePct.toFixed(2)}%`,
+            changePct,
+          );
         },
       };
     case 'change':
@@ -574,21 +594,25 @@ defineExpose({ clearSelection: () => { selectedRow.value = null; } });
 :deep(.pct-col) { font-weight: 500; }
 :deep(.pct-col.up) { color: var(--color-up); }
 :deep(.pct-col.down) { color: var(--color-down); }
-:deep(.quote-price-cell) {
+:deep(.quote-change-cell) {
   display: inline-flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: 2px;
+  justify-content: center;
+  height: 30px;
+  gap: 1px;
   line-height: 1;
 }
-:deep(.quote-market-phase) {
+:deep(.quote-session-label) {
   font-size: 9px;
   color: var(--color-text-tertiary);
   white-space: nowrap;
+  height: 10px;
+  line-height: 10px;
 }
-:deep(.quote-market-phase.phase-pre),
-:deep(.quote-market-phase.phase-post) { color: var(--color-info, #4da3ff); }
-:deep(.quote-market-phase.phase-overnight) { color: var(--color-warning); }
+:deep(.quote-session-label.phase-pre),
+:deep(.quote-session-label.phase-post) { color: var(--color-info, #4da3ff); }
+:deep(.quote-session-label.is-empty) { visibility: hidden; }
 /* 列渲染内容由 NDataTable 挂载，scoped 样式需用 :deep() 才能生效 */
 :deep(.code-text) {
   font-family: var(--font-mono);

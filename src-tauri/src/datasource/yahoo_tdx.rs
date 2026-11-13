@@ -264,30 +264,64 @@ fn timestamp_in_period(meta: &Value, phase: &str, timestamp: i64) -> bool {
     matches!((start, end), (Some(start), Some(end)) if timestamp >= start && timestamp < end)
 }
 
-fn current_period_market_time(meta: &Value, phase: &str, timestamps: &[Value], now: i64) -> Option<i64> {
+fn period_bar(
+    meta: &Value,
+    phase: &str,
+    timestamps: &[Value],
+    quote_rows: &Value,
+    now: i64,
+    max_age_seconds: Option<i64>,
+) -> Option<(i64, f64, u64)> {
+    let mut latest: Option<(i64, f64)> = None;
+    let mut total_volume = 0_u64;
+    for (index, value) in timestamps.iter().enumerate() {
+        let Some(timestamp) = value.as_i64() else {
+            continue;
+        };
+        if !timestamp_in_period(meta, phase, timestamp) || timestamp > now {
+            continue;
+        }
+        total_volume = total_volume.saturating_add(
+            number_at(quote_rows, "volume", index)
+                .unwrap_or(0.0)
+                .max(0.0) as u64,
+        );
+        if max_age_seconds.is_some_and(|max_age| now - timestamp > max_age) {
+            continue;
+        }
+        let Some(price) = number_at(quote_rows, "close", index).filter(|price| *price > 0.0) else {
+            continue;
+        };
+        if latest.map_or(true, |(latest_timestamp, _)| timestamp > latest_timestamp) {
+            latest = Some((timestamp, price));
+        }
+    }
+    latest.map(|(timestamp, price)| (timestamp, price, total_volume))
+}
+
+fn current_period_market_time(meta: &Value, phase: &str, now: i64) -> Option<i64> {
     let field = match phase {
         "pre" => "preMarketTime",
         "post" => "postMarketTime",
         _ => return None,
     };
-    meta.get(field)
-        .and_then(Value::as_i64)
-        .filter(|timestamp| {
-            *timestamp <= now
-                && now - timestamp <= 5 * 60
-                && timestamp_in_period(meta, phase, *timestamp)
-        })
-        .or_else(|| {
-            timestamps
-                .iter()
-                .filter_map(Value::as_i64)
-                .filter(|timestamp| {
-                    *timestamp <= now
-                        && now - timestamp <= 5 * 60
-                        && timestamp_in_period(meta, phase, *timestamp)
-                })
-                .max()
-        })
+    meta.get(field).and_then(Value::as_i64).filter(|timestamp| {
+        *timestamp <= now
+            && now - timestamp <= 5 * 60
+            && timestamp_in_period(meta, phase, *timestamp)
+    })
+}
+
+fn period_change_pct(meta: &Value, phase: &str, now: i64) -> Option<f64> {
+    let (time_field, change_field) = match phase {
+        "pre" => ("preMarketTime", "preMarketChangePercent"),
+        "post" => ("postMarketTime", "postMarketChangePercent"),
+        _ => return None,
+    };
+    let timestamp = meta.get(time_field).and_then(Value::as_i64)?;
+    (timestamp <= now && timestamp_in_period(meta, phase, timestamp))
+        .then(|| meta_number(meta, change_field))
+        .flatten()
 }
 
 fn parse_yahoo_chart(
@@ -295,6 +329,16 @@ fn parse_yahoo_chart(
     symbol: &str,
     market: &str,
     intraday: bool,
+) -> Result<YahooChartData, AppError> {
+    parse_yahoo_chart_at(response, symbol, market, intraday, Utc::now().timestamp())
+}
+
+fn parse_yahoo_chart_at(
+    response: &Value,
+    symbol: &str,
+    market: &str,
+    intraday: bool,
+    now: i64,
 ) -> Result<YahooChartData, AppError> {
     let chart = response
         .get("chart")
@@ -365,24 +409,34 @@ fn parse_yahoo_chart(
     }
 
     let last_bar = bars.last();
-    let now = Utc::now().timestamp();
     let session = yahoo_market_phase_at(meta, market, now);
+    let previous_close = meta_number(meta, "chartPreviousClose")
+        .or_else(|| meta_number(meta, "previousClose"))
+        .unwrap_or(0.0);
+    let regular_market_price = positive_meta_number(meta, "regularMarketPrice").or_else(|| {
+        (session == "regular")
+            .then(|| last_bar.map(|bar| bar.close))
+            .flatten()
+    });
     let phase_price_field = match session {
         "pre" => "preMarketPrice",
         "post" => "postMarketPrice",
         _ => "regularMarketPrice",
     };
-    let live_phase_time = if matches!(session, "pre" | "post") {
-        current_period_market_time(meta, session, &timestamps, now)
+    let current_extended_bar = if matches!(session, "pre" | "post") {
+        period_bar(meta, session, &timestamps, quote_rows, now, Some(5 * 60))
     } else {
         None
     };
-    let live_phase_price = if live_phase_time.is_some() {
-        positive_meta_number(meta, phase_price_field)
+    let metadata_extended_quote = if matches!(session, "pre" | "post") {
+        current_period_market_time(meta, session, now)
+            .zip(positive_meta_number(meta, phase_price_field))
     } else {
         None
     };
-    let has_extended_quote = live_phase_price.is_some() && live_phase_time.is_some();
+    let live_extended_quote = metadata_extended_quote
+        .or_else(|| current_extended_bar.map(|(timestamp, price, _)| (timestamp, price)));
+    let has_extended_quote = live_extended_quote.is_some();
     let phase = match (session, has_extended_quote) {
         ("pre", false) => "pre_no_data",
         ("post", false) => "post_no_data",
@@ -408,42 +462,67 @@ fn parse_yahoo_chart(
             "regularMarketTime",
         ),
     };
-    let price = live_phase_price
-        .or_else(|| positive_meta_number(meta, "regularMarketPrice"))
+    let price = live_extended_quote
+        .map(|(_, price)| price)
+        .or(regular_market_price)
         .or_else(|| last_bar.map(|bar| bar.close))
         .unwrap_or(0.0);
-    let previous_close = meta_number(meta, "chartPreviousClose")
-        .or_else(|| meta_number(meta, "previousClose"))
-        .unwrap_or(0.0);
-    let volume = meta
-        .get(volume_field)
-        .and_then(Value::as_u64)
-        .or_else(|| meta.get("regularMarketVolume").and_then(Value::as_u64))
-        .or_else(|| last_bar.map(|bar| bar.volume))
-        .unwrap_or(0);
+    let pre_market_bar = period_bar(meta, "pre", &timestamps, quote_rows, now, None);
+    let post_market_bar = period_bar(meta, "post", &timestamps, quote_rows, now, None);
+    let change_pct_from_reference = |reference_price: f64, session_price: f64| {
+        (reference_price > 0.0)
+            .then(|| (session_price - reference_price) / reference_price * 100.0)
+    };
+    let pre_market_change_pct = period_change_pct(meta, "pre", now)
+        .or_else(|| {
+            pre_market_bar
+                .and_then(|(_, price, _)| change_pct_from_reference(previous_close, price))
+        });
+    let post_market_change_pct = period_change_pct(meta, "post", now)
+        .or_else(|| {
+            post_market_bar.and_then(|(_, price, _)| {
+                regular_market_price
+                    .and_then(|regular_close| change_pct_from_reference(regular_close, price))
+            })
+        });
+    let volume = if has_extended_quote {
+        meta.get(volume_field)
+            .and_then(Value::as_u64)
+            .or_else(|| current_extended_bar.map(|(_, _, volume)| volume))
+            .unwrap_or(0)
+    } else {
+        meta.get("regularMarketVolume")
+            .and_then(Value::as_u64)
+            .or_else(|| last_bar.map(|bar| bar.volume))
+            .unwrap_or(0)
+    };
     let name = meta
         .get("longName")
         .or_else(|| meta.get("shortName"))
         .and_then(Value::as_str)
         .unwrap_or(symbol)
         .to_string();
-    let quote_phase_time = if has_extended_quote {
-        live_phase_time
-    } else {
-        None
-    };
+    let quote_phase_time = live_extended_quote.map(|(timestamp, _)| timestamp);
     let timestamp = quote_phase_time
         .or_else(|| meta.get(time_field).and_then(Value::as_i64))
         .or_else(|| meta.get("regularMarketTime").and_then(Value::as_i64))
         .unwrap_or_else(|| Utc::now().timestamp());
-    let change = meta_number(meta, change_field).unwrap_or(price - previous_close);
+    let change_reference = if phase == "post" {
+        regular_market_price.unwrap_or(previous_close)
+    } else {
+        previous_close
+    };
+    let change = meta_number(meta, change_field).unwrap_or(price - change_reference);
     let change_pct = meta_number(meta, change_pct_field).unwrap_or_else(|| {
-        if previous_close > 0.0 {
-            change / previous_close * 100.0
-        } else {
-            0.0
-        }
+        change_pct_from_reference(change_reference, price).unwrap_or(0.0)
     });
+    let regular_change_pct = market.eq_ignore_ascii_case("US").then(|| {
+        meta_number(meta, "regularMarketChangePercent")
+            .or_else(|| {
+                regular_market_price
+                    .and_then(|price| change_pct_from_reference(previous_close, price))
+            })
+    }).flatten();
 
     Ok(YahooChartData {
         quote: Quote {
@@ -469,6 +548,9 @@ fn parse_yahoo_chart(
             turnover_rate: None,
             timestamp,
             market_phase: phase.to_string(),
+            regular_change_pct,
+            pre_market_change_pct,
+            post_market_change_pct,
         },
         bars,
         minutes,
@@ -519,6 +601,9 @@ fn tdx_quote_to_domain(q: &tdxrs::protocol::types::SecurityQuote) -> Quote {
         turnover_rate: None,
         timestamp: Utc::now().timestamp(),
         market_phase: "regular".to_string(),
+        regular_change_pct: None,
+        pre_market_change_pct: None,
+        post_market_change_pct: None,
     }
 }
 
@@ -1141,8 +1226,8 @@ impl DataSource for YahooTdxAdapter {
 mod tests {
     use super::{
         bar_is_at_or_before, current_period_market_time, market_provider, normalize_tdx_end_date,
-        parse_yahoo_chart, tdx_symbol, yahoo_market_phase_at, yahoo_quote_market,
-        yahoo_search_query, yahoo_symbol, MarketProvider, YahooTdxAdapter,
+        parse_yahoo_chart, parse_yahoo_chart_at, tdx_symbol, yahoo_market_phase_at,
+        yahoo_quote_market, yahoo_search_query, yahoo_symbol, MarketProvider, YahooTdxAdapter,
     };
     use serde_json::json;
     use tdxrs::protocol::constants::{MARKET_SH, MARKET_SZ};
@@ -1232,8 +1317,8 @@ mod tests {
             "preMarketTime": 1_000,
             "currentTradingPeriod": { "pre": { "start": 900, "end": 2_000 } }
         });
-        assert_eq!(current_period_market_time(&meta, "pre", &[], 1_100), Some(1_000));
-        assert_eq!(current_period_market_time(&meta, "pre", &[], 1_000 + 5 * 60 + 1), None);
+        assert_eq!(current_period_market_time(&meta, "pre", 1_100), Some(1_000));
+        assert_eq!(current_period_market_time(&meta, "pre", 1_000 + 5 * 60 + 1), None);
     }
 
     #[test]
@@ -1291,5 +1376,82 @@ mod tests {
         assert_eq!(parsed.quote.change, 4.32);
         assert_eq!(parsed.quote.volume, 1000);
         assert_eq!(parsed.bars[0].date, "2023-11-14");
+    }
+
+    #[test]
+    fn uses_extended_session_bar_when_yahoo_quote_fields_are_empty() {
+        let response = json!({
+            "chart": { "result": [{
+                "meta": {
+                    "symbol": "SOXS",
+                    "currency": "USD",
+                    "shortName": "Direxion Daily Semiconductor Bear 3X Shares",
+                    "exchangeTimezoneName": "America/New_York",
+                    "chartPreviousClose": 45.0,
+                    "regularMarketPrice": 45.32,
+                    "regularMarketVolume": 100000,
+                    "regularMarketTime": 1_800,
+                    "preMarketPrice": null,
+                    "preMarketTime": null,
+                    "currentTradingPeriod": {
+                        "pre": { "start": 1_000, "end": 2_000 },
+                        "regular": { "start": 2_000, "end": 3_000 },
+                        "post": { "start": 3_000, "end": 4_000 }
+                    }
+                },
+                "timestamp": [1_700, 1_850],
+                "indicators": { "quote": [{
+                    "open": [47.70, 47.75],
+                    "high": [47.80, 47.90],
+                    "low": [47.60, 47.70],
+                    "close": [47.78, 47.88],
+                    "volume": [120, 80]
+                }] }
+            }], "error": null }
+        });
+        let parsed = parse_yahoo_chart_at(&response, "SOXS", "US", true, 1_900).unwrap();
+        assert_eq!(parsed.quote.market_phase, "pre");
+        assert_eq!(parsed.quote.price, 47.88);
+        assert_eq!(parsed.quote.volume, 200);
+        assert_eq!(parsed.quote.timestamp, 1_850);
+        assert_eq!(parsed.quote.change_pct, 6.4);
+        assert!((parsed.quote.regular_change_pct.unwrap() - 0.711111).abs() < 0.00001);
+        assert!((parsed.quote.pre_market_change_pct.unwrap() - 6.4).abs() < 0.00001);
+        assert_eq!(parsed.quote.post_market_change_pct, None);
+
+        let response = json!({
+            "chart": { "result": [{
+                "meta": {
+                    "symbol": "SOXS",
+                    "currency": "USD",
+                    "exchangeTimezoneName": "America/New_York",
+                    "chartPreviousClose": 45.0,
+                    "regularMarketPrice": 45.32,
+                    "regularMarketChangePercent": 0.711111,
+                    "regularMarketVolume": 100000,
+                    "currentTradingPeriod": {
+                        "pre": { "start": 1_000, "end": 2_000 },
+                        "regular": { "start": 2_000, "end": 3_000 },
+                        "post": { "start": 3_000, "end": 4_000 }
+                    }
+                },
+                "timestamp": [1_700, 1_850, 3_100, 3_400],
+                "indicators": { "quote": [{
+                    "open": [47.70, 47.75, 47.90, 47.95],
+                    "high": [47.80, 47.90, 48.00, 48.10],
+                    "low": [47.60, 47.70, 47.85, 47.90],
+                    "close": [47.78, 47.88, 47.95, 48.00],
+                    "volume": [120, 80, 50, 70]
+                }] }
+            }], "error": null }
+        });
+        let parsed = parse_yahoo_chart_at(&response, "SOXS", "US", true, 3_500).unwrap();
+        assert_eq!(parsed.quote.market_phase, "post");
+        assert_eq!(parsed.quote.price, 48.0);
+        let post_change_pct = (48.0_f64 - 45.32) / 45.32 * 100.0;
+        assert!((parsed.quote.change_pct - post_change_pct).abs() < 0.00001);
+        assert!((parsed.quote.regular_change_pct.unwrap() - 0.711111).abs() < 0.00001);
+        assert!((parsed.quote.pre_market_change_pct.unwrap() - 6.4).abs() < 0.00001);
+        assert!((parsed.quote.post_market_change_pct.unwrap() - post_change_pct).abs() < 0.00001);
     }
 }

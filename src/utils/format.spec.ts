@@ -8,6 +8,7 @@ import {
   formatQuotePrice,
   formatQuoteVolume,
   formatMarketPhase,
+  formatUsExtendedMove,
   getQuotePrecision,
 } from './format';
 
@@ -81,13 +82,28 @@ describe('foreign quote formatting', () => {
 });
 
 describe('market phase labels', () => {
-  it('labels US extended sessions and states that overnight ATS data is unavailable', () => {
+  it('labels US pre-market and after-hours sessions', () => {
     expect(formatMarketPhase('pre', 'US')).toBe('盘前');
     expect(formatMarketPhase('pre_no_data', 'US')).toBe('盘前暂无报价');
     expect(formatMarketPhase('regular', 'US')).toBe('正常交易');
     expect(formatMarketPhase('post', 'US')).toBe('盘后');
     expect(formatMarketPhase('post_no_data', 'US')).toBe('盘后暂无报价');
-    expect(formatMarketPhase('overnight', 'US')).toBe('夜盘无实时数据');
+    expect(formatMarketPhase('overnight', 'US')).toBe('已收盘');
     expect(formatMarketPhase('closed', 'US')).toBe('已收盘');
+  });
+
+  it('formats only US pre-market and after-hours changes', () => {
+    expect(formatUsExtendedMove('pre', 'US', 1.25, null)).toEqual({
+      phase: 'pre', text: '盘前 +1.25%',
+    });
+    expect(formatUsExtendedMove('regular', 'US', -0.4, null)).toEqual({
+      phase: 'pre', text: '盘前 -0.40%',
+    });
+    expect(formatUsExtendedMove('post_no_data', 'US', null, null)).toEqual({
+      phase: 'post', text: '盘后暂无报价',
+    });
+    expect(formatUsExtendedMove('overnight', 'US', 1.25, null)).toBeNull();
+    expect(formatUsExtendedMove('pre', 'HK', 1.25, null)).toBeNull();
+    expect(formatUsExtendedMove('closed', 'US', null, null)).toBeNull();
   });
 });

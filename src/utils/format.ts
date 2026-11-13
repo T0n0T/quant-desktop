@@ -100,7 +100,7 @@ export function formatQuoteAmount(amount: number | null | undefined, market: str
   return `${currencyPrefix(market)}${unit}`;
 }
 
-/** 报价所属交易时段。夜盘没有 ATS 实时源时，明确提示数据不可用。 */
+/** 报价所属交易时段，盘前/盘后暂无报价时明确提示数据不可用。 */
 export function formatMarketPhase(phase: string | null | undefined, market: string): string {
   if (market === 'US' || market === 'HK') {
     switch (phase) {
@@ -108,12 +108,64 @@ export function formatMarketPhase(phase: string | null | undefined, market: stri
       case 'pre_no_data': return '盘前暂无报价';
       case 'post': return '盘后';
       case 'post_no_data': return '盘后暂无报价';
-      case 'overnight': return '夜盘无实时数据';
+      case 'overnight':
       case 'closed': return '已收盘';
       default: return '正常交易';
     }
   }
   return '正常交易';
+}
+
+export interface UsExtendedMove {
+  phase: 'pre' | 'post';
+  text: string;
+}
+
+/** 美股扩展时段副标，常规交易时保留当日盘前涨幅作为参考。 */
+export function formatUsExtendedMove(
+  phase: string | null | undefined,
+  market: string,
+  preMarketChangePct: number | null | undefined,
+  postMarketChangePct: number | null | undefined,
+): UsExtendedMove | null {
+  if (market !== 'US') return null;
+
+  let session: UsExtendedMove['phase'] | null = null;
+  let changePct: number | null | undefined;
+  let unavailableText: string | null = null;
+  switch (phase) {
+    case 'pre':
+      session = 'pre';
+      changePct = preMarketChangePct;
+      unavailableText = '盘前暂无报价';
+      break;
+    case 'pre_no_data':
+      return { phase: 'pre', text: '盘前暂无报价' };
+    case 'regular':
+      if (preMarketChangePct == null) return null;
+      session = 'pre';
+      changePct = preMarketChangePct;
+      break;
+    case 'post':
+      session = 'post';
+      changePct = postMarketChangePct;
+      unavailableText = '盘后暂无报价';
+      break;
+    case 'post_no_data':
+      return { phase: 'post', text: '盘后暂无报价' };
+    default:
+      return null;
+  }
+
+  if (changePct == null || Number.isNaN(changePct)) {
+    return unavailableText && session ? { phase: session, text: unavailableText } : null;
+  }
+  if (!session) return null;
+  const label = session === 'pre' ? '盘前' : '盘后';
+  return {
+    phase: session,
+    text: `${label} ${changePct >= 0 ? '+' : ''}${changePct.toFixed(2)}%`,
+  };
 }
 
 /**

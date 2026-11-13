@@ -22,6 +22,14 @@ pub struct Quote {
     /// Yahoo quote session: pre, regular, post, overnight, or closed. Other sources use regular.
     #[serde(default)]
     pub market_phase: String,
+    /// Regular-session percentage, kept separate from the active pre/post quote.
+    #[serde(default)]
+    pub regular_change_pct: Option<f64>,
+    /// US extended-session moves are shown separately from the regular-session change.
+    #[serde(default)]
+    pub pre_market_change_pct: Option<f64>,
+    #[serde(default)]
+    pub post_market_change_pct: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
