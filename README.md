@@ -4,18 +4,18 @@
 
 # QuantDesktop
 
-**免费 · 开源 · 零打扰** —— 桌面级 A 股实时行情看盘工具
+**免费 · 开源 · 零打扰** —— 桌面级 A 股、港股与美股实时行情看盘工具
 
 *让看盘更安静一点*
 
-[![GitHub Release](https://img.shields.io/github/v/release/Leaderxin/quant-desktop?style=flat-square)](https://github.com/Leaderxin/quant-desktop/releases)
+[![GitHub Release](https://img.shields.io/github/v/release/T0n0T/quant-desktop?style=flat-square)](https://github.com/T0n0T/quant-desktop/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=flat-square)](#-下载安装)
 [![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue?style=flat-square)](#-开源许可)
 [![官网](https://img.shields.io/badge/%E5%AE%98%E7%BD%91-leaderxin.github.io-58a6ff?style=flat-square)](https://leaderxin.github.io/quant-desktop/)
-[![CI](https://github.com/Leaderxin/quant-desktop/actions/workflows/ci.yml/badge.svg)](https://github.com/Leaderxin/quant-desktop/actions/workflows/ci.yml)
-[![Downloads](https://img.shields.io/github/downloads/Leaderxin/quant-desktop/total?style=flat-square)](https://github.com/Leaderxin/quant-desktop/releases)
+[![CI](https://github.com/T0n0T/quant-desktop/actions/workflows/ci.yml/badge.svg)](https://github.com/T0n0T/quant-desktop/actions/workflows/ci.yml)
+[![Downloads](https://img.shields.io/github/downloads/T0n0T/quant-desktop/total?style=flat-square)](https://github.com/T0n0T/quant-desktop/releases)
 
-[![下载最新版](https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD%E6%9C%80%E6%96%B0%E7%89%88-v1.8.0-2ea44f?style=for-the-badge)](https://github.com/Leaderxin/quant-desktop/releases/latest)
+[![下载最新版](https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD%E6%9C%80%E6%96%B0%E7%89%88-v1.8.1-2ea44f?style=for-the-badge)](https://github.com/T0n0T/quant-desktop/releases/latest)
 [![Microsoft Store](https://img.shields.io/badge/Microsoft_Store-%E4%B8%8B%E8%BD%BD-00A4EF?style=for-the-badge)](https://apps.microsoft.com/detail/9P46MZZDTTZ0)
 [![加入交流群](https://img.shields.io/badge/%E5%8A%A0%E5%85%A5%E4%BA%A4%E6%B5%81%E7%BE%A4-%E5%BE%AE%E4%BF%A1-07c160?style=for-the-badge)](#-贡献与交流)
 
@@ -99,8 +99,8 @@
 - **自选分组** —— 标签栏一键切换，双击就地重命名，右键菜单重命名 / 删除 / 上下移动 / 新建分组；同一只股票可同时属于多个分组，在每个分组里的位置各自独立
 - **列随你挑** —— 显示哪些列、列的先后顺序、默认按哪列排序，都在设置里调；点列头即可临时改排，列宽固定、数字成列对齐不跳动
 - **表格批量导入** —— 弹框里下载模板（xlsx）、选文件或直接拖入，支持 .xlsx / .xls / .csv；按代码或名称自动匹配，导入前可勾选落到哪些分组，导入后逐行显示成功 / 已存在 / 失败原因
-- 输入 6 位代码即时搜索，**市场标签**（沪A / 深A / 北A / 沪指 / ETF…）让同代码的指数与个股一眼可辨
-- 覆盖沪深京三市个股、指数与 ETF
+- 支持 A 股代码，以及港美股代码、英文名称和常见中文名称搜索；**市场标签**让同代码的指数与个股一眼可辨
+- 覆盖沪深京三市个股、指数与 ETF，并支持港股、美股行情
 - 置顶 / 上移 / 下移 / 删除，右键菜单快捷操作
 - 跨数据源智能回退：一个源搜不到，自动换源再试
 
@@ -115,6 +115,7 @@
 - 📌 **始终置顶**于所有窗口，无边框、不占任务栏
 - 🔄 每 3 秒自动轮播自选股：名称 / 现价 / 涨跌幅，每屏 1–10 只可调
 - 🎯 **轮播范围自定** —— 跨分组挑选播报标的、拖拽调整播报顺序，不需要的逐只关掉
+- 🇺🇸 美股盘前、盘后涨跌幅显示在常规涨跌幅下方；没有实时数据的夜盘不显示
 - 🪟 **可设为透明背景** —— 底板、圆角与阴影一并去掉，只留数字浮在桌面上
 - ⏸ 鼠标悬停自动暂停，看清楚了再走
 - 🖱 **直接拖拽**到桌面任意位置 —— 拖到哪儿，下次启动还出现在哪儿（位置自动记忆）
@@ -152,7 +153,7 @@
 | 市场概览 | 面板显隐、板块排行条数（5 / 10） |
 | 自选列表 | 显示哪些列与列的先后、默认排序、涨跌配色 |
 | 行情条 | 显隐、透明背景、单次轮播条数（1–10）、跨分组轮播范围 |
-| 通用 | 主题（暗色 / 亮色 / 跟随系统）、开机自启、数据源 |
+| 通用 | 主题（暗色 / 亮色 / 跟随系统）、开机自启、数据源、新入选股票是否自动进入行情条 |
 | 关于 | 版本与检查更新、更新说明、Star 与商店好评入口 |
 
 排序项都能拖拽，也能用 `Alt+↑/↓` 或每行按钮 —— 键盘一样排得动。
@@ -219,7 +220,7 @@
 
 **更多细节**：
 
-- 🔌 **双数据源** —— 主数据源（默认）+ 备用源，顶栏一键切换、即时刷新；单源接口异常自动回退
+- 🔌 **多市场行情源** —— TDX / Yahoo Finance 组合源按市场路由（A 股走通达信，港美股走 Yahoo Finance），也可切换腾讯与新浪数据源
 - 💾 **离线缓存** —— 行情数据写入本地 SQLite，重启立即恢复上次报价，打开就有数据，不用等网络
 - 🪟 **窗口位置记忆** —— 主窗口与行情条的位置、大小自动保存，重启原位恢复，跨显示器自动边界保护
 - 🫥 **托盘常驻** —— 关闭窗口不退出，安静缩到系统托盘；支持开机自启
@@ -231,7 +232,7 @@
 
 ### 下载
 
-前往 [GitHub Releases](https://github.com/Leaderxin/quant-desktop/releases/latest) 下载最新版本，或从 [Microsoft Store](https://apps.microsoft.com/detail/9P46MZZDTTZ0) 安装（商店版自动跟随商店更新）：
+前往 [GitHub Releases](https://github.com/T0n0T/quant-desktop/releases/latest) 下载最新版本，或从 [Microsoft Store](https://apps.microsoft.com/detail/9P46MZZDTTZ0) 安装（商店版自动跟随商店更新）：
 
 | 平台 | 安装包 | 体积 | 说明 |
 |------|--------|------|------|
@@ -258,7 +259,7 @@ QuantDesktop 基于 **Tauri 2 + Rust + Vue 3** 构建 —— 与开源项目 [CC
 | 桌面框架 | Tauri 2 |
 | 后端 | Rust · tokio · rusqlite · reqwest |
 | 前端 | Vue 3 · Pinia · Naive UI · klinecharts |
-| 数据源 | 主数据源 · 备用源（可插拔适配器架构） |
+| 数据源 | 通达信 / Yahoo Finance 组合源、腾讯与新浪适配器 |
 
 ---
 
@@ -284,7 +285,7 @@ QuantDesktop 基于 **Tauri 2 + Rust + Vue 3** 构建 —— 与开源项目 [CC
 **📋 规划中**
 
 - [ ] 价格预警通知
-- [ ] 港股 / 美股市场支持
+- [x] 港股 / 美股搜索与行情支持，组合数据源按市场路由
 
 ---
 
@@ -292,7 +293,7 @@ QuantDesktop 基于 **Tauri 2 + Rust + Vue 3** 构建 —— 与开源项目 [CC
 
 **Q：行情数据从哪里来？可靠吗？**
 
-行情数据来自公开网络接口，双数据源互为备份，接口异常自动回退。数据仅供个人参考，不构成投资建议。
+行情数据来自公开网络接口，数据源可切换，搜索支持跨源回退。数据仅供个人参考，不构成投资建议。
 
 **Q：真的完全免费吗？**
 
@@ -342,6 +343,6 @@ Windows 10 / 11、macOS（Intel + Apple Silicon）、Linux（Ubuntu 22.04+ / gli
 
 **如果 QuantDesktop 对你有用，欢迎点一个 ⭐ Star —— 这是持续开发的动力！**
 
-QuantDesktop v1.8.0 · 让看盘更安静一点
+QuantDesktop v1.8.1 · 让看盘更安静一点
 
 </div>

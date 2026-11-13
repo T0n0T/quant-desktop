@@ -3047,7 +3047,7 @@ dependencies = [
 
 [[package]]
 name = "quant-desktop"
-version = "1.8.0"
+version = "1.8.1"
 dependencies = [
  "async-trait",
  "calamine",
