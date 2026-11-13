@@ -425,7 +425,9 @@ async function handleClick(event: MouseEvent | KeyboardEvent) {
   display: flex;
   align-items: center;
   gap: var(--space-1);
-  line-height: 1.4;
+  height: 32px;
+  flex: 0 0 32px;
+  line-height: 1;
 }
 .ticker-name {
   flex: 1;
@@ -457,9 +459,10 @@ async function handleClick(event: MouseEvent | KeyboardEvent) {
 .ticker-change-column {
   display: flex;
   flex: 0 0 48px;
+  height: 32px;
   flex-direction: column;
   align-items: flex-end;
-  justify-content: center;
+  justify-content: flex-end;
   gap: 1px;
 }
 .ticker-change {
@@ -467,6 +470,7 @@ async function handleClick(event: MouseEvent | KeyboardEvent) {
   font-size: var(--text-xs);
   font-family: var(--font-mono);
   width: 48px;
+  line-height: 12px;
   text-align: right;
 }
 .ticker-extended-move {
