@@ -31,6 +31,8 @@ pub fn shared_client() -> &'static Client {
                 "AppleWebKit/537.36 (KHTML, like Gecko) ",
                 "Chrome/131.0.0.0 Safari/537.36"
             ))
+            .pool_idle_timeout(Duration::from_secs(30))
+            .tcp_keepalive(Duration::from_secs(30))
             .pool_max_idle_per_host(10)
             .build()
             .expect("Failed to build shared reqwest Client — TLS backend may be missing")
@@ -212,8 +214,21 @@ pub trait DataSource: Send + Sync {
         market: &str,
     ) -> Result<Vec<Quote>, AppError>;
 
+    /// Internal retry target for fetch_realtime (default: delegate).
+    async fn fetch_realtime_once(
+        &self,
+        codes: &[String],
+        market: &str,
+    ) -> Result<Vec<Quote>, AppError> {
+        self.fetch_realtime(codes, market).await
+    }
+
     /// Fetch major indices
     async fn fetch_indices(&self) -> Result<Vec<IndexQuote>, AppError>;
+
+    async fn fetch_indices_once(&self) -> Result<Vec<IndexQuote>, AppError> {
+        self.fetch_indices().await
+    }
 
     /// Search stocks (fuzzy match code or name)
     async fn search(
@@ -256,6 +271,17 @@ pub trait DataSource: Send + Sync {
         _count: Option<u32>,
     ) -> Result<Vec<crate::domain::KLineData>, AppError> {
         Ok(vec![])
+    }
+
+    async fn fetch_kline_once(
+        &self,
+        code: &str,
+        market: &str,
+        period: &str,
+        end_date: Option<&str>,
+        count: Option<u32>,
+    ) -> Result<Vec<crate::domain::KLineData>, AppError> {
+        self.fetch_kline(code, market, period, end_date, count).await
     }
 
     /// Health check
@@ -470,3 +496,4 @@ pub mod market_clock;
 pub mod search;
 pub mod headers;
 pub mod yahoo_tdx;
+pub(crate) mod tdx_session;

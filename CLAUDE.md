@@ -70,7 +70,7 @@ CSP 必须放行 `connect-src 'self' ipc: http://ipc.localhost`（Windows 走 `h
 
 ### Rust 后端（`src-tauri/src/`）
 
-**`lib.rs`** — 应用装配：开库、注册数据源（腾讯默认，新浪备用）、恢复报价缓存、起后台 `Scheduler`、建托盘（左键显示/隐藏、右键 显示 / 行情条 / — / 检查更新 / 设置 / 退出）、注册全部 IPC、初始化 updater。主窗口的 `CloseRequested` 被拦成隐藏。窗口位置/大小落库并在下次启动时按显示器边界校验后恢复。
+**`lib.rs`** — 应用装配：开库、注册数据源（腾讯默认，新浪备用，另有通达信 + Yahoo）、恢复报价缓存、起后台 `Scheduler`、建托盘（左键显示/隐藏、右键 显示 / 行情条 / — / 检查更新 / 设置 / 退出）、注册全部 IPC、初始化 updater。主窗口的 `CloseRequested` 被拦成隐藏。窗口位置/大小落库并在下次启动时按显示器边界校验后恢复。
 
 - 启动路径上**不要做串行网络等待**：`detect_and_set_proxy` 的 7 个本地端口必须并行、超时 ≤150ms（Win10 上端口被静默丢弃时，串行的 1s 超时会逐个等满）。它与 `Scheduler::spawn` 都在 `main.show()` 之后，但必须「先探测、后调度器」。共享行情 client 用 `.no_proxy()` 且必须惰性获取 —— **适配器不要在构造时初始化它**。
 
@@ -108,6 +108,7 @@ CSP 必须放行 `connect-src 'self' ipc: http://ipc.localhost`（Windows 走 `h
 - 涨跌额只保留到 4 位压浮点噪声，**不能截到分**：ETF/LOF/可转债的最小变动价位是 0.001，截断后前端拿不到 0.013；显示精度由前端 `getQuotePrecision` 按标的类别决定（ETF/LOF 固定 3 位，其余值自适配）。
 - `sina.rs`（备用）：GBK、`var hq_str_`。指数必须用**股票格式**接口（不带 `s_` 前缀）——紧凑格式对 `s_sz399006` 的量额是错的；上证指数成交额在所有格式下都只有 1/100，需 `saturating_mul(100)`；指数数据已是股/元，不再乘。搜索只认精确代码；深度借腾讯；分时/K 线走 `money.finance.sina.com.cn`。
 - `tencent.rs`（默认）：GBK、`v_sh600519=` + `~` 分隔；分时 `ifzq.gtimg.cn`、K 线 `web.ifzq.gtimg.cn`、深度取内嵌字段（位置 9–28）。
+- `yahoo_tdx.rs`（通达信 + Yahoo Finance）：CN 走 tdxrs 的常驻 TCP 客户端，HK/US 走 Yahoo HTTP。TDX 连接生命周期统一在 `tdx_session.rs`：客户端单例、`connect_to_any()` 幂等；**必须关掉 tdxrs 的自动重试**（死 socket 下它会在同一 fd 上重试 4×5s，且 `connected` 不清零导致永不重连）。`TdxSession` 在请求前按「CST 跨天 / 空闲 >120s」换新客户端，传输层失败（断开/读超时/连接池）再换一次并 200ms 后重试；建连用独立锁串行化（`connect_internal` 会 `close_all()`，与借出的连接并发会打乱池计数）。新增 CN 取数入口一律走 `run_tdx`，不要直接调 `connect_to_any`。
 - `market_clock.rs`：`MarketSession`（PreOpen/MorningTrade/LunchBreak/AfternoonTrade/Closed，含周末）。`recommended_interval()`：交易 2s、盘前 5s、午休 10s、休市 30s；概览另用 `overview_interval()`。
 
 **`hotkey.rs`** — 全局老板键（按下只隐藏主窗口，不动行情条、不改设置）。注册放在 Rust 侧，因为要响应时应用没有任何焦点。

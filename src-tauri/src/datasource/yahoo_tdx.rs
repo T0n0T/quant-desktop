@@ -13,6 +13,7 @@ use serde_json::Value;
 use std::str::FromStr;
 use std::sync::{Arc, OnceLock};
 
+use crate::datasource::tdx_session::TdxSession;
 use crate::datasource::{DataSource, INDEX_CODES, INDEX_POOL_NAMES};
 use crate::domain::{AppError, Depth, IndexQuote, KLineData, Level, MinuteData, Quote, StockBrief};
 
@@ -43,14 +44,14 @@ struct YahooChartData {
 #[derive(Clone)]
 pub struct YahooTdxAdapter {
     yahoo: Arc<OnceLock<Client>>,
-    tdx: Arc<tdxrs::net::client::TdxHqClient>,
+    tdx: Arc<TdxSession>,
 }
 
 impl YahooTdxAdapter {
     pub fn new() -> Self {
         Self {
             yahoo: Arc::new(OnceLock::new()),
-            tdx: Arc::new(tdxrs::net::client::TdxHqClient::new()),
+            tdx: Arc::new(TdxSession::new()),
         }
     }
 
@@ -67,6 +68,8 @@ impl YahooTdxAdapter {
                     "AppleWebKit/537.36 (KHTML, like Gecko) ",
                     "Chrome/131.0.0.0 Safari/537.36"
                 ))
+                .pool_idle_timeout(std::time::Duration::from_secs(30))
+                .tcp_keepalive(std::time::Duration::from_secs(30))
                 .build()
                 .expect("failed to build Yahoo Finance HTTP client")
         })
@@ -705,6 +708,25 @@ fn date_prefix_for_tdx() -> String {
 }
 
 impl YahooTdxAdapter {
+    /// Run one TDX operation on the blocking pool.
+    ///
+    /// `TdxSession` owns connection reuse, stale-connection rotation and the
+    /// single retry; every CN request must go through here instead of calling
+    /// `connect_to_any` directly.
+    async fn run_tdx<T, F>(&self, op: F) -> Result<T, AppError>
+    where
+        T: Send + 'static,
+        F: Fn(&tdxrs::net::client::TdxHqClient) -> Result<T, tdxrs::error::TdxError>
+            + Send
+            + 'static,
+    {
+        let session = Arc::clone(&self.tdx);
+        tokio::task::spawn_blocking(move || session.run(op))
+            .await
+            .map_err(|e| AppError::network("tdx", format!("阻塞任务失败: {e}")))?
+            .map_err(|e| AppError::network("tdx", format!("TDX 请求失败: {}", e.format_coded())))
+    }
+
     async fn yahoo_chart(
         &self,
         symbol: &str,
@@ -766,52 +788,40 @@ impl YahooTdxAdapter {
         if symbols.is_empty() {
             return Ok(vec![]);
         }
-        let client = self.tdx.clone();
-        let quotes = tokio::task::spawn_blocking(move || {
-            client
-                .connect_to_any(Some(5.0))
-                .map_err(|e| format!("TDX 连接失败: {e}"))?;
-            let mut quotes = Vec::with_capacity(symbols.len());
-            for batch in symbols.chunks(TDX_QUOTE_BATCH_SIZE) {
-                let requests: Vec<(u8, &str)> = batch
-                    .iter()
-                    .map(|(market, code)| (*market, code.as_str()))
-                    .collect();
-                let mut batch_quotes = client
-                    .get_security_quotes(&requests)
-                    .map_err(|e| format!("TDX 行情请求失败: {e}"))?;
-                quotes.append(&mut batch_quotes);
-            }
-            Ok::<_, String>(quotes)
-        })
-        .await
-        .map_err(|e| AppError::network("tdx", format!("阻塞任务失败: {e}")))?
-        .map_err(|e| AppError::network("tdx", e))?;
+        let quotes = self
+            .run_tdx(move |client| {
+                let mut quotes = Vec::with_capacity(symbols.len());
+                for batch in symbols.chunks(TDX_QUOTE_BATCH_SIZE) {
+                    let requests: Vec<(u8, &str)> = batch
+                        .iter()
+                        .map(|(market, code)| (*market, code.as_str()))
+                        .collect();
+                    let mut batch_quotes = client.get_security_quotes(&requests)?;
+                    quotes.append(&mut batch_quotes);
+                }
+                Ok(quotes)
+            })
+            .await?;
         Ok(quotes.iter().map(tdx_quote_to_domain).collect())
     }
 
     async fn fetch_tdx_indices(&self) -> Result<Vec<IndexQuote>, AppError> {
         let symbols: Vec<(u8, String, String)> =
             INDEX_CODES.split(',').filter_map(tdx_symbol).collect();
-        let client = self.tdx.clone();
-        let quotes = tokio::task::spawn_blocking(move || {
-            client
-                .connect_to_any(Some(5.0))
-                .map_err(|e| format!("TDX 连接失败: {e}"))?;
-            let requests: Vec<(u8, &str)> = symbols
-                .iter()
-                .map(|(market, digits, _)| (*market, digits.as_str()))
-                .collect();
-            let quotes = client
-                .get_security_quotes(&requests)
-                .map_err(|e| format!("TDX 指数请求失败: {e}"))?;
-            Ok::<_, String>((symbols, quotes))
-        })
-        .await
-        .map_err(|e| AppError::network("tdx", format!("阻塞任务失败: {e}")))?
-        .map_err(|e| AppError::network("tdx", e))?;
+        let order: Vec<String> = symbols
+            .iter()
+            .map(|(_, _, code)| format!("s_{code}"))
+            .collect();
+        let quotes = self
+            .run_tdx(move |client| {
+                let requests: Vec<(u8, &str)> = symbols
+                    .iter()
+                    .map(|(market, digits, _)| (*market, digits.as_str()))
+                    .collect();
+                client.get_security_quotes(&requests)
+            })
+            .await?;
 
-        let (symbols, quotes) = quotes;
         let mut indices = Vec::with_capacity(quotes.len());
         for q in quotes {
             let canonical = quote_code(q.market, &q.code);
@@ -837,9 +847,9 @@ impl YahooTdxAdapter {
             });
         }
         indices.sort_by_key(|index| {
-            symbols
+            order
                 .iter()
-                .position(|(_, _, code)| format!("s_{}", code) == index.code)
+                .position(|code| *code == index.code)
                 .unwrap_or(usize::MAX)
         });
         Ok(indices)
@@ -848,18 +858,9 @@ impl YahooTdxAdapter {
     async fn fetch_tdx_minute(&self, code: &str) -> Result<Vec<MinuteData>, AppError> {
         let (market, digits, _) = tdx_symbol(code)
             .ok_or_else(|| AppError::Unsupported(format!("无效的 A 股代码: {code}")))?;
-        let client = self.tdx.clone();
-        let data = tokio::task::spawn_blocking(move || {
-            client
-                .connect_to_any(Some(5.0))
-                .map_err(|e| format!("TDX 连接失败: {e}"))?;
-            client
-                .get_minute_time_data(market, &digits)
-                .map_err(|e| format!("TDX 分时请求失败: {e}"))
-        })
-        .await
-        .map_err(|e| AppError::network("tdx", format!("阻塞任务失败: {e}")))?
-        .map_err(|e| AppError::network("tdx", e))?;
+        let data = self
+            .run_tdx(move |client| client.get_minute_time_data(market, &digits))
+            .await?;
 
         let date = date_prefix_for_tdx();
         let mut result: Vec<MinuteData> = data
@@ -891,51 +892,42 @@ impl YahooTdxAdapter {
             .ok_or_else(|| AppError::Unsupported(format!("不支持的周期: {period}")))?;
         let requested = count.unwrap_or(200).clamp(1, 800) as u16;
         let end_date_owned = end_date.and_then(normalize_tdx_end_date);
-        let client = self.tdx.clone();
-        let bars = tokio::task::spawn_blocking(move || {
-            client
-                .connect_to_any(Some(5.0))
-                .map_err(|e| format!("TDX 连接失败: {e}"))?;
-            if end_date_owned.is_none() {
-                return client
-                    .get_security_bars(category, market, &digits, 0, requested, 1)
-                    .map_err(|e| format!("TDX K 线请求失败: {e}"));
-            }
-
-            let end_date = end_date_owned.unwrap_or_default();
-            let mut offset = 0_u32;
-            let mut selected = Vec::new();
-            for _ in 0..MAX_TDX_KLINE_PAGES {
-                let page = client
-                    .get_security_bars(category, market, &digits, offset, TDX_KLINE_PAGE_SIZE, 1)
-                    .map_err(|e| format!("TDX K 线请求失败: {e}"))?;
-                if page.is_empty() {
-                    break;
+        let bars = self
+            .run_tdx(move |client| {
+                if end_date_owned.is_none() {
+                    return client.get_security_bars(category, market, &digits, 0, requested, 1);
                 }
 
-                let page_len = page.len();
-                let reached_end = page
-                    .first()
-                    .map(|bar| compact_tdx_date(&bar.datetime).as_str() <= end_date.as_str())
-                    .unwrap_or(false);
-                let older_bars: Vec<_> = page
-                    .into_iter()
-                    .filter(|bar| compact_tdx_date(&bar.datetime).as_str() <= end_date.as_str())
-                    .collect();
-                selected.splice(0..0, older_bars);
+                let end_date = end_date_owned.clone().unwrap_or_default();
+                let mut offset = 0_u32;
+                let mut selected = Vec::new();
+                for _ in 0..MAX_TDX_KLINE_PAGES {
+                    let page = client
+                        .get_security_bars(category, market, &digits, offset, TDX_KLINE_PAGE_SIZE, 1)?;
+                    if page.is_empty() {
+                        break;
+                    }
+                    let page_len = page.len();
+                    let reached_end = page
+                        .first()
+                        .map(|bar| compact_tdx_date(&bar.datetime).as_str() <= end_date.as_str())
+                        .unwrap_or(false);
+                    let older_bars: Vec<_> = page
+                        .into_iter()
+                        .filter(|bar| compact_tdx_date(&bar.datetime).as_str() <= end_date.as_str())
+                        .collect();
+                    selected.splice(0..0, older_bars);
 
-                if (reached_end && selected.len() >= requested as usize)
-                    || page_len < TDX_KLINE_PAGE_SIZE as usize
-                {
-                    break;
+                    if (reached_end && selected.len() >= requested as usize)
+                        || page_len < TDX_KLINE_PAGE_SIZE as usize
+                    {
+                        break;
+                    }
+                    offset = offset.saturating_add(page_len as u32);
                 }
-                offset = offset.saturating_add(page_len as u32);
-            }
-            Ok(selected)
-        })
-        .await
-        .map_err(|e| AppError::network("tdx", format!("阻塞任务失败: {e}")))?
-        .map_err(|e| AppError::network("tdx", e))?;
+                Ok(selected)
+            })
+            .await?;
 
         let mut result: Vec<KLineData> = bars.iter().map(tdx_bar_to_domain).collect();
         if let Some(end_date) = end_date.and_then(normalize_tdx_end_date) {
@@ -1153,24 +1145,14 @@ impl DataSource for YahooTdxAdapter {
         }
         let (tdx_market, digits, _) = tdx_symbol(code)
             .ok_or_else(|| AppError::Unsupported(format!("无效的 A 股代码: {code}")))?;
-        let client = self.tdx.clone();
-        let depth = tokio::task::spawn_blocking(move || {
-            client
-                .connect_to_any(Some(5.0))
-                .map_err(|e| format!("TDX 连接失败: {e}"))?;
+        self.run_tdx(move |client| {
             let refs = [(tdx_market, digits.as_str())];
-            let quotes = client
-                .get_security_quotes(&refs)
-                .map_err(|e| format!("TDX 深度请求失败: {e}"))?;
-            quotes
-                .first()
-                .map(tdx_depth)
-                .ok_or_else(|| "TDX 未返回盘口数据".to_string())
+            let quotes = client.get_security_quotes(&refs)?;
+            quotes.first().map(tdx_depth).ok_or_else(|| {
+                tdxrs::error::TdxError::InvalidData("TDX 未返回盘口数据".to_string())
+            })
         })
         .await
-        .map_err(|e| AppError::network("tdx", format!("阻塞任务失败: {e}")))?
-        .map_err(|e| AppError::network("tdx", e))?;
-        Ok(depth)
     }
 
     async fn fetch_minute_data(
@@ -1211,14 +1193,9 @@ impl DataSource for YahooTdxAdapter {
     }
 
     async fn health_check(&self) -> Result<bool, AppError> {
-        let client = self.tdx.clone();
-        tokio::task::spawn_blocking(move || {
-            client
-                .connect_to_any(Some(5.0))
-                .map_err(|e| AppError::network("tdx", format!("健康检查失败: {e}")))
-        })
-        .await
-        .map_err(|e| AppError::network("tdx", format!("阻塞任务失败: {e}")))?
+        // `run_tdx` 本身就会建连（或复用已连接的客户端）。
+        self.run_tdx(|_| Ok::<bool, tdxrs::error::TdxError>(true))
+            .await
     }
 }
 

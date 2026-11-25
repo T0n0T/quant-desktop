@@ -208,6 +208,25 @@ impl DataSource for TencentAdapter {
         codes: &[String],
         market: &str,
     ) -> Result<Vec<Quote>, AppError> {
+        // 跨天/休眠唤醒后连接可能已死：失败时重建（空闲超时已缩短）并重试一次。
+        for attempt in 0..2 {
+            match self.fetch_realtime_once(codes, market).await {
+                Ok(v) => return Ok(v),
+                Err(e) if attempt == 0 => {
+                    log::warn!("tencent fetch_realtime retry after: {}", e);
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        unreachable!()
+    }
+
+    async fn fetch_realtime_once(
+        &self,
+        codes: &[String],
+        market: &str,
+    ) -> Result<Vec<Quote>, AppError> {
         let tenc_codes: Vec<String> = codes
             .iter()
             .map(|c| Self::code_to_tencent(c, market))
@@ -237,6 +256,20 @@ impl DataSource for TencentAdapter {
     }
 
     async fn fetch_indices(&self) -> Result<Vec<IndexQuote>, AppError> {
+        for attempt in 0..2 {
+            match self.fetch_indices_once().await {
+                Ok(v) => return Ok(v),
+                Err(e) if attempt == 0 => {
+                    log::warn!("tencent fetch_indices retry after: {}", e);
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        unreachable!()
+    }
+
+    async fn fetch_indices_once(&self) -> Result<Vec<IndexQuote>, AppError> {
         let index_codes = INDEX_CODES;
         let url = format!("{}{}", TENCENT_URL, index_codes);
 
@@ -376,6 +409,27 @@ impl DataSource for TencentAdapter {
     }
 
     async fn fetch_kline(
+        &self,
+        code: &str,
+        market: &str,
+        period: &str,
+        end_date: Option<&str>,
+        count: Option<u32>,
+    ) -> Result<Vec<crate::domain::KLineData>, AppError> {
+        for attempt in 0..2 {
+            match self.fetch_kline_once(code, market, period, end_date, count).await {
+                Ok(v) => return Ok(v),
+                Err(e) if attempt == 0 => {
+                    log::warn!("tencent fetch_kline retry after: {}", e);
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        unreachable!()
+    }
+
+    async fn fetch_kline_once(
         &self,
         code: &str,
         market: &str,
