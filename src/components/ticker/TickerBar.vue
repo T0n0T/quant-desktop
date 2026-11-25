@@ -10,6 +10,7 @@ import { useSettingsStore } from '@/stores/settings';
 import { useTickerWindowHeight } from '@/composables/useTickerWindowHeight';
 import { formatUsExtendedMove, formatQuotePrice } from '@/utils/format';
 import { nextPageStart, windowItems } from '@/utils/paging';
+import TickerSparkline from './TickerSparkline.vue';
 
 const quoteStore = useQuoteStore();
 const watchlist = useWatchlistStore();
@@ -170,6 +171,7 @@ const tickerItems = computed(() =>
       code: item.code,
       market: item.market,
       price: q?.price ?? null,
+      // 价格颜色跟扩展时段的实际涨跌走，正文显示常规交易涨跌。
       priceChangePct: q?.change_pct ?? null,
       changePct: q?.regular_change_pct ?? q?.change_pct ?? null,
       move: q ? formatUsExtendedMove(
@@ -178,6 +180,10 @@ const tickerItems = computed(() =>
         q.pre_market_change_pct,
         q.post_market_change_pct,
       ) : null,
+      // 分时线用它判断报价是不是当天的（Unix 秒，后端按抓取时刻写入）
+      quoteTime: q?.timestamp,
+      // 分时图数据里没有上一交易日时（新股首日）的兜底昨收
+      prevClose: q ? q.price - q.change : undefined,
     };
   })
 );
@@ -201,12 +207,25 @@ const visibleItems = computed(() =>
   windowItems(tickerItems.value, page.value, perPage.value),
 );
 
+/**
+ * 是否给每行挂分时图。
+ *
+ * 行的排布跟着它走：挂图就改成「左文字（名称 / 价格+涨跌）| 右图」的左右结构，
+ * 图才有约两行字的高度；不挂就维持原来的一行三段，行情条回到紧凑高度。
+ * 两处必须同一个条件，否则会出现「文字按两行排、右边没有图」的空档。
+ *
+ * heightReady 之前不挂：那时窗口还是占位行的高度，长高会被量进一次无效位移。
+ */
+const showChart = computed(
+  () => heightReady.value && settings.tickerChartEnabled,
+);
+
 const retryHintVisible = ref(false);
 
 // ── Dragging ──
 // Uses Tauri's startDragging() API (Win32 DefWindowProc) for smooth
 // OS-level window dragging on both Windows 10 and 11.
-// Position is auto-saved by the Rust WindowEvent::Moved handler in lib.rs.
+// Position is auto-saved by the settle worker in src-tauri/src/window_bounds.rs.
 //
 // 点击 / 拖动靠按下后的位移区分：
 // - 点击(位移 ≤ 阈值)：@click 照常触发 → 打开主窗口（受「点击唤醒主界面」设置控制）
@@ -228,6 +247,16 @@ let isDragging = false;
 function onMouseDown(e: MouseEvent) {
   // 中键/右键既不拖动也不打开主窗口，别为它们挂监听。
   if (e.button !== 0) return;
+  // 阻止 mousedown 的默认行为「按下即聚焦」。焦点落在行情条上之后，窗口
+  // 重新激活时（主窗口关闭后激活权还给 ticker、startDragging 结束窗口被
+  // 激活）WebView 会按键盘焦点重绘 UA 的黑色焦点框 —— 表现为整条行情条
+  // 四周多出一圈黑边。行情条的鼠标交互只依赖 click / drag，不需要 DOM
+  // 焦点；键盘 Tab 聚焦不经过这里，焦点与 :focus-visible 描边仍然保留。
+  e.preventDefault();
+  // preventDefault 只挡住「这次按下要聚焦」，挡不住已经持有的焦点：此前用
+  // Tab 进来、或由窗口激活恢复的焦点要显式收掉，否则重新激活时同样会画框。
+  // 鼠标一按下就视为切回鼠标操作，收掉键盘焦点不影响后续 Tab 导航。
+  (e.currentTarget as HTMLElement | null)?.blur();
   // 上一次手势没收到 mouseup 的话，它的监听还挂着 —— 先收干净再挂新的，
   // 否则两份并存，旧的那份会拿旧起点抢先判定。
   stopMouseTracking?.();
@@ -363,28 +392,57 @@ async function handleClick(event: MouseEvent | KeyboardEvent) {
         </div>
       </template>
       <template v-else-if="visibleItems.length > 0">
-        <div v-for="item in visibleItems" :key="`${item.market}:${item.code}`" class="ticker-row">
-          <span class="ticker-name">{{ item.name }}</span>
-          <span
-            v-if="item.price !== null"
-            class="ticker-price tabular-nums"
-            :class="item.priceChangePct !== null && item.priceChangePct >= 0 ? 'up' : 'down'"
-          >{{ formatQuotePrice(item.price, item.market) }}</span>
-          <span v-else class="ticker-na">--</span>
-          <span class="ticker-change-column">
-            <span
-              v-if="item.changePct !== null"
-              class="ticker-change tabular-nums"
-              :class="item.changePct >= 0 ? 'up' : 'down'"
-            >{{ item.changePct >= 0 ? '+' : '' }}{{ item.changePct.toFixed(2) }}%</span>
-            <span v-else class="ticker-change ticker-na">--</span>
-            <span
-              class="ticker-extended-move"
-              :class="item.move ? `phase-${item.move.phase}` : 'is-empty'"
-              :title="item.move?.text"
-              :aria-hidden="item.move ? undefined : 'true'"
-            >{{ item.move?.text ?? '' }}</span>
-          </span>
+        <div
+          v-for="item in visibleItems"
+          :key="`${item.market}:${item.code}`"
+          class="ticker-row"
+          :class="{
+            'with-chart': showChart,
+            'is-us': item.market === 'US',
+            'has-move': !!item.move,
+          }"
+        >
+          <!-- 左侧文字块：不挂图时 display: contents，退化成一行三段；
+               挂图时才立起来变成上下两行，右边留给分时线。 -->
+          <div class="ticker-text">
+            <span class="ticker-name">{{ item.name }}</span>
+            <span class="ticker-figures">
+              <span
+                v-if="item.price !== null"
+                class="ticker-price tabular-nums"
+                :class="item.priceChangePct !== null && item.priceChangePct >= 0 ? 'up' : 'down'"
+              >{{ formatQuotePrice(item.price, item.market) }}</span>
+              <span v-else class="ticker-na">--</span>
+              <span class="ticker-change-slot">
+                <span
+                  v-if="item.changePct !== null"
+                  class="ticker-change tabular-nums"
+                  :class="item.changePct >= 0 ? 'up' : 'down'"
+                >{{ item.changePct >= 0 ? '+' : '' }}{{ item.changePct.toFixed(2) }}%</span>
+                <span v-else class="ticker-change ticker-na">--</span>
+                <!-- 美股盘前/盘后副标：6px 常驻在涨跌下方，不再单独占一行。
+                     只有有内容时才渲染，CN/HK 完全不受影响。 -->
+                <span
+                  v-if="item.move"
+                  class="ticker-extended-move"
+                  :class="`phase-${item.move.phase}`"
+                  :title="item.move.text"
+                >{{ item.move.text }}</span>
+              </span>
+            </span>
+          </div>
+          <!-- 每行自己的迷你分时线：与行情同一横轴（09:30–15:00），一眼对应到
+               左边这行字。heightReady 之前窗口还是占位行的高度，此时挂载会让
+               窗口先长高再被内容量回来，跳过它。 -->
+          <TickerSparkline
+            v-if="showChart"
+            :code="item.code"
+            :market="item.market"
+            :chart-style="settings.tickerChartStyle"
+            :prev-close="item.prevClose"
+            :price="item.price"
+            :quote-time="item.quoteTime"
+          />
         </div>
       </template>
       <!-- 区分两种为空：诚然没有自选，与有自选但全部关闭了播报 -->
@@ -408,6 +466,18 @@ async function handleClick(event: MouseEvent | KeyboardEvent) {
 .ticker-bar:hover {
   background: rgba(255, 255, 255, 0.03);
 }
+/*
+  焦点样式显式接管，不依赖 UA 默认值（那圈黑框在深色透明行情条上很扎眼）：
+  - 鼠标路径已在 onMouseDown 里阻止聚焦，正常情况下不会命中这两条；
+  - 键盘 Tab 进来时保留一圈主题色描边，键盘用户仍能看清焦点位置。
+*/
+.ticker-bar:focus:not(:focus-visible) {
+  outline: none;
+}
+.ticker-bar:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
 /* 透明模式下不能有 hover 底色：底板已经去掉了，悬停时冒出一块半透明矩形
    会像渲染残留。光标仍会变成 grab，交互提示没有丢。 */
 .ticker-bar.is-transparent:hover {
@@ -429,7 +499,43 @@ async function handleClick(event: MouseEvent | KeyboardEvent) {
   flex: 0 0 32px;
   line-height: 1;
 }
+/* 挂图行按内容高：两行文字 + 6px 副标最多比上游多 6px，由窗口高度测量吸收。 */
+.ticker-row.with-chart {
+  height: auto;
+  flex: 0 0 auto;
+  min-height: 32px;
+}
+/* 挂图时左列与图之间给足间距，比文字之间的 4px 松一档 */
+.ticker-row.with-chart {
+  gap: var(--space-2);
+}
+/* 上下两行本身已经比一行紧凑；两行之间再留 4px，避免行与行糊成一块 */
+.ticker-row.with-chart + .ticker-row.with-chart {
+  margin-top: var(--space-1);
+}
+/*
+  没挂图时这个包装不参与布局（display: contents）—— 名称与数字直接成为
+  `.ticker-row` 的 flex 子项，仍是原来的一行三段；挂图时它才立起来变成
+  上下两行的文字列。一份 DOM 两种排布，不用把模板写两遍。
+*/
+.ticker-text {
+  display: contents;
+}
+.ticker-row.with-chart .ticker-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+.ticker-figures {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  flex-shrink: 0;
+}
 .ticker-name {
+  /* 一行三段时占满剩余宽度，把价格与涨跌推到右边；上下两行时按内容走 */
   flex: 1;
   min-width: 0;
   color: var(--color-text-primary);
@@ -439,12 +545,22 @@ async function handleClick(event: MouseEvent | KeyboardEvent) {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* 上下两行时名称不再需要撑宽（列本身已经 flex:1），只要允许它收缩截断 ——
+   `flex: 1` 在纵向的列里会沿主轴长高，那是另一回事。 */
+.ticker-row.with-chart .ticker-name {
+  flex: 0 1 auto;
+  line-height: 1.3;
+}
+/*
+  价格按内容宽：短价格（ETF 常见 1.234）不再占着 46px 的空列，省下的宽度
+  直接给左侧名称，长 ETF 名称才不会被截。涨跌列仍固定 48px —— 它是每行最右
+  一列，定宽能保证跨行右缘对齐，不会因为 +/- 位数不同而错位。
+*/
 .ticker-price {
   flex-shrink: 0;
   font-weight: var(--font-weight-semibold);
   font-size: var(--text-xs);
   font-family: var(--font-mono);
-  width: 46px;
   text-align: right;
   color: var(--color-text-primary);
 }
@@ -453,17 +569,7 @@ async function handleClick(event: MouseEvent | KeyboardEvent) {
   color: var(--color-text-tertiary);
   font-size: var(--text-xs);
   font-family: var(--font-mono);
-  width: 46px;
   text-align: right;
-}
-.ticker-change-column {
-  display: flex;
-  flex: 0 0 48px;
-  height: 32px;
-  flex-direction: column;
-  align-items: flex-end;
-  justify-content: flex-end;
-  gap: 1px;
 }
 .ticker-change {
   flex-shrink: 0;
@@ -473,20 +579,69 @@ async function handleClick(event: MouseEvent | KeyboardEvent) {
   line-height: 12px;
   text-align: right;
 }
+.ticker-change-slot {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  flex-shrink: 0;
+}
+/* 6px 小字：高度只有 6px，放在涨跌下方也不会把非挂图行撑高（行本身 32px）。 */
 .ticker-extended-move {
-  width: 48px;
-  height: 10px;
+  max-width: 52px;
+  height: 6px;
   overflow: hidden;
   color: var(--color-text-tertiary);
-  font-size: 9px;
-  line-height: 10px;
+  font-size: 6px;
+  line-height: 6px;
   text-align: right;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .ticker-extended-move.phase-pre,
 .ticker-extended-move.phase-post { color: var(--color-info, #4da3ff); }
-.ticker-extended-move.is-empty { visibility: hidden; }
+/* 只有带扩展时段副标的美国股票缩小常规价格/涨跌，其他市场保持原字号。 */
+.ticker-row.is-us.has-move .ticker-price { font-size: 10px; }
+.ticker-row.is-us.has-move .ticker-change { font-size: 10px; }
+/*
+  挂图后两行文字的字号/权重拉开一档：价格是主角（12px/600，跟着方向着色），
+  名称退成 11px/500；涨跌收进同色浅底的小胶囊，与右侧曲线共用同一种颜色。
+  胶囊只改变文字块内部的观感，不占额外行高。
+*/
+.ticker-row.with-chart .ticker-figures {
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-1);
+}
+.ticker-row.with-chart .ticker-price {
+  width: auto;
+  font-size: var(--text-sm);
+  line-height: 1.3;
+}
+.ticker-row.with-chart .ticker-change {
+  width: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 3px;
+  border-radius: var(--radius-sm);
+  font-size: 10px;
+  line-height: 14px;
+  font-weight: var(--font-weight-semibold);
+}
+.ticker-row.with-chart .ticker-change.up {
+  background: var(--color-up-bg);
+}
+.ticker-row.with-chart .ticker-change.down {
+  background: var(--color-down-bg);
+}
+/* 挂图时扩展时段副标仍是 6px，只让美股价格/涨跌再小一档。 */
+.ticker-row.with-chart.is-us.has-move .ticker-price { font-size: var(--text-xs); }
+.ticker-row.with-chart.is-us.has-move .ticker-change {
+  font-size: 9px;
+  line-height: 12px;
+  padding: 0 2px;
+}
 .up { color: var(--color-up); }
 .down { color: var(--color-down); }
 .ticker-empty {

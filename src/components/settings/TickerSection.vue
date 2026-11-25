@@ -4,7 +4,8 @@ import { computed, ref, watch } from 'vue';
 import { useSettingsStore } from '@/stores/settings';
 import { useWatchlistStore } from '@/stores/watchlist';
 import { formatCode } from '@/utils/format';
-import { clampTickerItems, TICKER_ITEMS_MAX, TICKER_ITEMS_MIN, TICKER_ITEMS_PRESET_MAX } from '@/utils/prefs';
+import { clampTickerItems, TICKER_ITEMS_MAX, TICKER_ITEMS_MIN, TICKER_ITEMS_PRESET_MAX, type TickerChartStyle } from '@/utils/prefs';
+import SparklinePreview from './SparklinePreview.vue';
 import { moveByStep } from '@/utils/dragSort';
 import SettingsRow from './SettingsRow.vue';
 import SegmentedControl from './SegmentedControl.vue';
@@ -13,6 +14,12 @@ import { NSwitch } from 'naive-ui';
 
 const settings = useSettingsStore();
 const watchlist = useWatchlistStore();
+
+/** 画法。默认带 x 轴线与刻度 —— 格子很小时「横轴是一整天」需要一条轴来说明。 */
+const chartStyleOptions: { value: TickerChartStyle; label: string }[] = [
+  { value: 'axis', label: '带刻度' },
+  { value: 'plain', label: '纯曲线' },
+];
 
 /** 全部自选，按轮播位次排序。列表顺序即轮播顺序，所以这里必须用 ticker_order
  *  而不是分组顺序 —— 播报范围是跨分组的扁平列表。 */
@@ -151,6 +158,11 @@ const PREVIEW_ROWS = [
 ];
 
 const previewRows = computed(() => PREVIEW_ROWS.slice(0, settings.tickerItemsPerPage));
+
+/** 预览行的方向。以前价与涨跌都写死 up，跌的行会显示成红色，与实物不符。 */
+function rowTone(pct: string): 'up' | 'down' {
+  return pct.trim().startsWith('-') ? 'down' : 'up';
+}
 </script>
 
 <template>
@@ -177,6 +189,31 @@ const previewRows = computed(() => PREVIEW_ROWS.slice(0, settings.tickerItemsPer
             :value="settings.tickerTransparent"
             aria-label="行情条透明背景"
             @update:value="settings.setTickerTransparent($event)"
+          />
+        </SettingsRow>
+
+        <SettingsRow
+          title="迷你分时线"
+          description="在每行行情右侧画一段当日分时走势（09:30–15:00）；关闭后行情条恢复紧凑高度。"
+        >
+          <NSwitch
+            size="small"
+            :value="settings.tickerChartEnabled"
+            aria-label="行情条迷你分时线"
+            @update:value="settings.setTickerChartEnabled($event)"
+          />
+        </SettingsRow>
+
+        <SettingsRow
+          v-if="settings.tickerChartEnabled"
+          title="分时线刻度"
+          description="带刻度：底部多一条 x 轴线与刻度（早盘两个端点、11:30 后三个，不标文字），横轴范围更好辨认。纯曲线：只留 0% 虚线与价格线，更干净。"
+        >
+          <SegmentedControl
+            :model-value="settings.tickerChartStyle"
+            :options="chartStyleOptions"
+            label="迷你分时线画法"
+            @update:model-value="settings.setTickerChartStyle($event)"
           />
         </SettingsRow>
 
@@ -222,10 +259,26 @@ const previewRows = computed(() => PREVIEW_ROWS.slice(0, settings.tickerItemsPer
       <div class="preview-wrap">
         <div class="preview" :class="{ transparent: settings.tickerTransparent }">
           <div class="preview-pill" :class="{ bare: settings.tickerTransparent }">
-            <div v-for="row in previewRows" :key="row.name" class="preview-row">
-              <span class="preview-name">{{ row.name }}</span>
-              <span class="preview-price up">{{ row.price }}</span>
-              <span class="preview-pct up">{{ row.pct }}</span>
+            <div
+              v-for="row in previewRows"
+              :key="row.name"
+              class="preview-row"
+              :class="{ 'with-chart': settings.tickerChartEnabled }"
+            >
+              <span class="preview-text">
+                <span class="preview-name">{{ row.name }}</span>
+                <span class="preview-figures">
+                  <span class="preview-price" :class="rowTone(row.pct)">{{ row.price }}</span>
+                  <span class="preview-pct" :class="rowTone(row.pct)">{{ row.pct }}</span>
+                </span>
+              </span>
+              <!-- 迷你分时用与行情条同一套画法（同一个 paintTickerSparkline），
+                   这里画的就是实际会看到的样子；示意数据，不发请求。 -->
+              <SparklinePreview
+                v-if="settings.tickerChartEnabled"
+                :chart-style="settings.tickerChartStyle"
+                :rising="rowTone(row.pct) === 'up'"
+              />
             </div>
           </div>
         </div>
@@ -336,12 +389,43 @@ const previewRows = computed(() => PREVIEW_ROWS.slice(0, settings.tickerItemsPer
   line-height: 1.4;
   font-size: var(--text-xs);
 }
+/*
+  与行情条同一套排布规则：挂图时左列上下两行 + 右侧图，关掉图时退回一行三段。
+  预览要是画不出这个差别，它就只是在骗人。
+*/
+.preview-row.with-chart {
+  gap: var(--space-2);
+}
+.preview-row.with-chart + .preview-row.with-chart {
+  margin-top: var(--space-1);
+}
+.preview-text {
+  display: contents;
+}
+.preview-row.with-chart .preview-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+.preview-figures {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1);
+}
 .preview-name {
-  width: 62px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
   color: var(--color-text-primary);
 }
+.preview-row.with-chart .preview-name {
+  flex: 0 1 auto;
+  line-height: 1.3;
+}
 .preview-price {
-  width: 46px;
   text-align: right;
   font-family: var(--font-mono);
 }
@@ -350,7 +434,35 @@ const previewRows = computed(() => PREVIEW_ROWS.slice(0, settings.tickerItemsPer
   text-align: right;
   font-family: var(--font-mono);
 }
+/* 与行情条的挂图态一致：价格 12px/600、涨跌收进同色胶囊 */
+.preview-row.with-chart .preview-figures {
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+}
+.preview-row.with-chart .preview-price {
+  width: auto;
+  font-size: var(--text-sm);
+  line-height: 1.3;
+  font-weight: var(--font-weight-semibold);
+}
+.preview-row.with-chart .preview-pct {
+  width: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 3px;
+  border-radius: var(--radius-sm);
+  font-size: 10px;
+  line-height: 14px;
+  font-weight: var(--font-weight-semibold);
+  background: var(--color-up-bg);
+}
+.preview-row.with-chart .preview-pct.down {
+  background: var(--color-down-bg);
+}
 .up { color: var(--color-up); }
+.down { color: var(--color-down); }
 
 .range-toolbar {
   display: flex;

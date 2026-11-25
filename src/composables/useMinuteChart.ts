@@ -5,7 +5,7 @@ import type { AxisCreateRangeParams, AxisCreateTicksParams, AxisRange, AxisTick,
 import type { MinuteData } from '@/types';
 import { useSettingsStore } from '@/stores/settings';
 import { hexToRgba } from '@/utils/color';
-import { beijingNow, mapMinuteBars, sessionKeyOf, sessionPrevClose, sessionUpdate } from '@/utils/minuteBars';
+import { beijingNow, mapMinuteBars, sessionKeyOf, sessionPrevClose, sessionUpdate, visibleMinuteBars } from '@/utils/minuteBars';
 import { adaptiveRange, inferBarMinutes, minuteAxisLayout, percentText, sessionFits, sessionTicks } from '@/utils/minuteAxis';
 import { subPaneHeight } from '@/utils/paneSize';
 import { useChartCore } from './useChartCore';
@@ -54,10 +54,17 @@ export function useMinuteChart(options: {
   prevClose?: MaybeRef<number | undefined>;
 }) {
   const settings = useSettingsStore();
-  const { chart, loading, error, periodToKlinecharts, syncPrecision, themeColors, volIndicatorConfig, initChartCore, disposeChart: coreDispose, reapplyStyles } = useChartCore(options);
+  const { chart, loading, error, periodToKlinecharts, syncPrecision, themeColors, volIndicatorConfig, initChartCore, disposeChart: coreDispose } = useChartCore(options);
 
   let abortController: AbortController | null = null;
   let refreshTimer: ReturnType<typeof setInterval> | null = null;
+
+  /**
+   * 数据代次：每次 `loadData` 自增。图表和 klineData 跨标的重用，切股时
+   * 上一只股票的增量请求可能还在路上；回来后代次对不上就丢掉，避免把旧
+   * 标的的 bar / 昨收写进新标的。
+   */
+  let dataEpoch = 0;
 
   /** subscribeBar 回调引用，增量推送数据到图表避免全量重绘导致的抖动 */
   let barSubscriber: ((bar: KCLineData) => void) | null = null;
@@ -371,15 +378,17 @@ export function useMinuteChart(options: {
     // 分时图增量刷新：通过 barSubscriber 推送增量 bar 避免全量重绘闪烁
     refreshTimer = setInterval(async () => {
       if (loading.value) return;
+      const epoch = dataEpoch;
       try {
         const data = await invoke<MinuteData[]>('get_intraday', {
           code: unref(options.code),
           market: unref(options.market),
         });
-        // 丢掉还没走到的时刻。数据源的钟点要先换算到与 bar 时间戳同一口径再比（见 beijingNow），
-        // 否则本机不在 UTC+8 时整段会话都会被判成未来、一并丢光
-        const boundary = beijingNow();
-        const validBars = mapMinuteBars(data).filter((b) => b.timestamp <= boundary);
+        // 切股后旧定时器的请求才回来：整批丢弃，别写进新标的的图表/缓存。
+        if (epoch !== dataEpoch) return;
+        // 丢掉还没走到的时刻，但保留数据源返回的进行中分钟（标签比现在晚一分钟，
+        // 见 visibleMinuteBars）。不保留的话，5s 轮询也只能在整分钟边界推动曲线。
+        const validBars = visibleMinuteBars(mapMinuteBars(data), beijingNow(), unref(options.market));
         if (validBars.length === 0) return;
 
         const newLast = validBars[validBars.length - 1];
@@ -414,6 +423,11 @@ export function useMinuteChart(options: {
   // ---- 数据加载 ----
 
   async function loadData() {
+    // 换股/重试时先停旧定时器：主请求失败时不会走到 startAutoRefresh，
+    // 旧 interval 却会用新代码拉数据、推进仍显示旧标的的图表。
+    stopAutoRefresh();
+    // 先换代号：从这一刻起，旧标的的增量请求回来都会被丢掉。
+    dataEpoch += 1;
     if (abortController) {
       abortController.abort();
     }
@@ -431,7 +445,8 @@ export function useMinuteChart(options: {
       if (signal.aborted) return;
 
       if (data.length) {
-        klineData.value = mapMinuteBars(data);
+        // 与 5s 增量刷新共用同一口径：保留进行中分钟，纵轴/横轴才不会漏算它
+        klineData.value = visibleMinuteBars(mapMinuteBars(data), beijingNow(), unref(options.market));
         dataPrevClose = sessionPrevClose(data);
       } else {
         // 空响应必须跟着标的清空：图表实例是复用的，留着上一只股票的 bar/昨收，
@@ -496,21 +511,11 @@ export function useMinuteChart(options: {
   // 不会停这里起的 5s 轮询，也不会断开新加的 ResizeObserver —— 切一次周期就漏一份
   onUnmounted(() => disposeChart());
 
-  /**
-   * 完整重放主题样式（通用 + 分钟图特有）。只调 core 的 reapplyStyles 会把价格线打回
-   * 默认蓝，而 installedLineColor 缓存会让下一次非强制刷新无法恢复。
-   */
-  function applyTheme() {
-    reapplyStyles();
-    applyMinuteThemeStyles();
-  }
-
   return {
     loading,
     error,
     initChart,
     loadData,
     disposeChart,
-    applyTheme,
   };
 }

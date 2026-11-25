@@ -141,6 +141,68 @@ describe('派生配置的解析与兜底', () => {
       .toEqual([7, 14]);
   });
 
+  it('ticker_chart_mode 默认关；on 与旧版 price/limit/both 算开，坏值按关', async () => {
+    expect((await load({ ticker_chart_mode: 'off' })).tickerChartEnabled).toBe(false);
+    expect((await load({ ticker_chart_mode: 'on' })).tickerChartEnabled).toBe(true);
+    expect((await load({ ticker_chart_mode: 'both' })).tickerChartEnabled).toBe(true);
+    expect((await load({ ticker_chart_mode: 'price' })).tickerChartEnabled).toBe(true);
+    expect((await load({ ticker_chart_mode: 'limit' })).tickerChartEnabled).toBe(true);
+    expect((await load({ ticker_chart_mode: 'bogus' })).tickerChartEnabled).toBe(false);
+    expect((await load({})).tickerChartEnabled).toBe(false);
+  });
+
+  it('setTickerChartEnabled 写 off/on 并广播到行情条', async () => {
+    const store = await load({});
+    invokeMock.mockResolvedValueOnce(undefined);
+    emitMock.mockClear();
+
+    await store.setTickerChartEnabled(false);
+
+    expect(invokeMock).toHaveBeenCalledWith('set_setting', {
+      key: 'ticker_chart_mode',
+      value: 'off',
+    });
+    expect(store.tickerChartEnabled).toBe(false);
+    expect(emitMock).toHaveBeenCalledWith('settings-changed', {
+      key: 'ticker_chart_mode',
+      value: 'off',
+    });
+
+    invokeMock.mockResolvedValueOnce(undefined);
+    await store.setTickerChartEnabled(true);
+    expect(invokeMock).toHaveBeenLastCalledWith('set_setting', {
+      key: 'ticker_chart_mode',
+      value: 'on',
+    });
+    expect(store.tickerChartEnabled).toBe(true);
+  });
+
+  it('ticker_chart_style 只认 axis/plain，缺键或坏值退回 axis', async () => {
+    expect((await load({ ticker_chart_style: 'axis' })).tickerChartStyle).toBe('axis');
+    expect((await load({ ticker_chart_style: 'plain' })).tickerChartStyle).toBe('plain');
+    expect((await load({ ticker_chart_style: 'bogus' })).tickerChartStyle).toBe('axis');
+    expect((await load({})).tickerChartStyle).toBe('axis');
+  });
+
+  it('setTickerChartStyle 写库并广播到行情条', async () => {
+    const store = await load({});
+    invokeMock.mockResolvedValueOnce(undefined);
+    emitMock.mockClear();
+
+    await store.setTickerChartStyle('plain');
+
+    expect(invokeMock).toHaveBeenCalledWith('set_setting', {
+      key: 'ticker_chart_style',
+      value: 'plain',
+    });
+    expect(store.tickerChartStyle).toBe('plain');
+    // 行情条是另一个窗口，只能靠这条广播知道画法变了（它不回广播）。
+    expect(emitMock).toHaveBeenCalledWith('settings-changed', {
+      key: 'ticker_chart_style',
+      value: 'plain',
+    });
+  });
+
   it('布尔型设置只认 "1"/"0"，缺键时取各自默认值', async () => {
     const store = await load({
       market_overview_visible: '0',

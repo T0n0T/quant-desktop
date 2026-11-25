@@ -20,6 +20,8 @@ import {
   parseDefaultSort,
   parseJsonArray,
   parseThemeMode,
+  parseTickerChartEnabled,
+  parseTickerChartStyle,
 } from './prefs';
 
 describe('parseJsonArray', () => {
@@ -166,6 +168,44 @@ describe('parseThemeMode', () => {
     expect(parseThemeMode('')).toBe('system');
     expect(parseThemeMode('Dark')).toBe('system');
     expect(parseThemeMode('auto')).toBe('system');
+  });
+});
+
+describe('parseTickerChartEnabled', () => {
+  it('只有 off 是关', () => {
+    expect(parseTickerChartEnabled('off')).toBe(false);
+    expect(parseTickerChartEnabled('on')).toBe(true);
+  });
+
+  /**
+   * 首装默认关：缺键、空串与坏值都按关处理。旧版的 price / limit / both 已经
+   * 不在 UI 里，但老库里可能存着：一律按开处理，用户下次拨开关时会被改写成 on。
+   */
+  it('旧版 price/limit/both 按开处理，缺键与坏值默认关', () => {
+    expect(parseTickerChartEnabled('price')).toBe(true);
+    expect(parseTickerChartEnabled('limit')).toBe(true);
+    expect(parseTickerChartEnabled('both')).toBe(true);
+    expect(parseTickerChartEnabled(undefined)).toBe(false);
+    expect(parseTickerChartEnabled('')).toBe(false);
+    expect(parseTickerChartEnabled('bogus')).toBe(false);
+  });
+});
+
+describe('parseTickerChartStyle', () => {
+  it('两个合法值原样返回', () => {
+    expect(parseTickerChartStyle('axis')).toBe('axis');
+    expect(parseTickerChartStyle('plain')).toBe('plain');
+  });
+
+  /**
+   * 缺键退回带刻度 —— 与 Rust 侧 `DEFAULT_SETTINGS` 的默认值一致。
+   * 这个键比 `ticker_chart_mode` 更晚出现，1.7.x 及更早的库里根本没有它，
+   * 两边默认值不一致的症状是「设置页显示带刻度、实际画的是纯曲线」。
+   */
+  it('缺键与坏值退回带刻度', () => {
+    expect(parseTickerChartStyle(undefined)).toBe('axis');
+    expect(parseTickerChartStyle('')).toBe('axis');
+    expect(parseTickerChartStyle('bogus')).toBe('axis');
   });
 });
 

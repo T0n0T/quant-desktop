@@ -11,11 +11,14 @@ import {
   parseDefaultSort,
   parseJsonArray,
   parseThemeMode,
+  parseTickerChartEnabled,
+  parseTickerChartStyle,
   clampTopN,
   clampTickerItems,
   type ColumnKey,
   type DefaultSort,
   type ThemeMode,
+  type TickerChartStyle,
 } from '@/utils/prefs';
 import { resolveTheme, systemPrefersDark, watchSystemTheme, type ResolvedTheme } from '@/utils/theme';
 import {
@@ -110,6 +113,14 @@ export const useSettingsStore = defineStore('settings', () => {
       2,
       clampTickerItems,
     ));
+
+  /** 行情条迷你分时线：开 / 关。 */
+  const tickerChartEnabled = computed(() =>
+    parseTickerChartEnabled(settings.value['ticker_chart_mode']));
+
+  /** 行情条迷你分时线的画法：带 x 轴线与刻度 / 只有虚线与曲线。 */
+  const tickerChartStyle = computed<TickerChartStyle>(() =>
+    parseTickerChartStyle(settings.value['ticker_chart_style']));
 
   const watchlistColumns = computed<ColumnKey[]>(() =>
     parseColumns(settings.value['watchlist_columns']));
@@ -224,6 +235,14 @@ export const useSettingsStore = defineStore('settings', () => {
 
   async function setTickerItemsPerPage(n: number) {
     await setSetting('ticker_items_per_page', String(clampTickerItems(n)));
+  }
+
+  async function setTickerChartEnabled(enabled: boolean) {
+    await setSetting('ticker_chart_mode', enabled ? 'on' : 'off');
+  }
+
+  async function setTickerChartStyle(style: TickerChartStyle) {
+    await setSetting('ticker_chart_style', style);
   }
 
   async function setWatchlistColumns(cols: ColumnKey[]) {
@@ -372,14 +391,15 @@ export const useSettingsStore = defineStore('settings', () => {
     // 派生配置
     indexCodes, marketOverviewVisible, sectorTopN, tickerVisible, tickerTransparent,
     tickerClickWakes, tickerAutoIncludeNew,
-    tickerItemsPerPage, watchlistColumns, watchlistDefaultSort, colorScheme, bossKey,
-    movingAveragePeriods,
+    tickerItemsPerPage, tickerChartEnabled, tickerChartStyle, watchlistColumns, watchlistDefaultSort,
+    colorScheme, bossKey, movingAveragePeriods,
     // 动作
     fetchSettings, setSetting, switchDatasource, setThemeMode, toggleAutoLaunch,
     applyColorScheme, applyRemoteSetting,
     setIndexCodes, setMarketOverviewVisible, setSectorTopN, setTickerVisible,
     setTickerTransparent, setTickerClickWakes, setTickerAutoIncludeNew,
-    setTickerItemsPerPage, setWatchlistColumns,
+    setTickerItemsPerPage, setTickerChartEnabled, setTickerChartStyle,
+    setWatchlistColumns,
     setWatchlistDefaultSort, setColorScheme, setBossKey,
     setMovingAveragePeriods,
   };

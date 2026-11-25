@@ -1,0 +1,200 @@
+<script setup lang="ts">
+// 设置页里的迷你分时线预览。
+//
+// 存在的理由就一条：这个选项的效果发生在另一个窗口（行情条），改完看不到任何
+// 反馈，用户只能切回去确认。所以这里就地画一格 —— 但画的是**示意数据**：
+// 预览要的是「这两种画法长什么样」，不是「这只股票今天怎么走」，为了它去发
+// get_intraday 既打扰数据源又要挑一只真的自选（新装的用户还没有）。
+//
+// 画法与纵轴全部走真实链路：`paintTickerSparkline` / `resolveSparklineRange`
+// 都是行情条用的那一份（含物理像素对齐与 alpha 规则），所以预览不会画出一个
+// 实际看不到的样子 —— 这类「预览与实物不符」比没有预览更糟。
+import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
+import { getCurrentWindow } from '@tauri-apps/api/window';
+import { useSettingsStore } from '@/stores/settings';
+import {
+  SPARKLINE_CANVAS_HEIGHT,
+  SPARKLINE_CANVAS_WIDTH,
+  paintTickerSparkline,
+  resolveSparklineRange,
+  sparklineBaselineY,
+  sparklineCanvasPoints,
+} from '@/utils/tickerSparkline';
+import type { TickerChartStyle } from '@/utils/prefs';
+
+const props = defineProps<{
+  /** 不叫 `style` —— Vue 对它有特殊处理，声明成 prop 收不到值 */
+  chartStyle: TickerChartStyle;
+  /** 这一行是涨还是跌：跌行把示意数据上下镜像，预览的曲线方向才与数字一致 */
+  rising?: boolean;
+}>();
+
+const canvasRef = ref<HTMLCanvasElement | null>(null);
+
+/** 昨收。示意数据以此为基准，涨跌都围着它走。 */
+const PREV_CLOSE = 100;
+
+/**
+ * 一天的示意分时：早盘下探、午前拉起、午后回落到略高于昨收。
+ *
+ * 起伏控制在 ±0.7% 量级（与真实行情同数量级，不是随手画的余弦），价格轴的
+ * 1% 下限会让它撑满曲线区。时间戳用交易日分钟铺到 09:30–14:59，午休那段
+ * 留空洞，午间断口才会出现在预览里。
+ */
+const SAMPLE_MINUTES = [2, 18, 34, 52, 68, 84, 118, 124, 142, 163, 182, 205, 228];
+const SAMPLE_CLOSES = [99.92, 99.54, 99.68, 99.9, 100.24, 100.42, 100.55, 100.48, 100.6, 100.72, 100.44, 100.52, 100.36];
+
+const sampleBars = SAMPLE_MINUTES.map((minute, i) => ({
+  timestamp: minuteOfDay(minute),
+  close: SAMPLE_CLOSES[i],
+}));
+
+/** 把「当日交易日分钟」还原成一个真实时间戳（09:30 起，跨过 11:30 补午休）。 */
+function minuteOfDay(minute: number): number {
+  const morning = 120;
+  const wall = minute <= morning ? 9 * 60 + 30 + minute : 13 * 60 + (minute - morning);
+  // 2026-01-05 是周一；预览数据不要求真实交易日，只要落在 09:30–15:00 之间。
+  return new Date(2026, 0, 5, Math.floor(wall / 60), wall % 60).getTime();
+}
+
+function palette() {
+  const css = getComputedStyle(document.documentElement);
+  const hex = (name: string, fallback: string) => {
+    const v = css.getPropertyValue(name).trim();
+    return /^#[0-9a-f]{6}$/i.test(v) ? v : fallback;
+  };
+  return {
+    accent: hex('--color-accent', '#58a6ff'),
+    up: hex('--color-up', '#f85149'),
+    down: hex('--color-down', '#3fb950'),
+    baseline: css.getPropertyValue('--color-text-tertiary').trim() || '#8b949e',
+  };
+}
+
+/**
+ * 位图倍率：WebKitGTK 在分数缩放下 `devicePixelRatio` 可能只报 1，
+ * 与行情条一致地再取一次 Tauri scaleFactor，取两者较大值。
+ */
+let tauriScale = 1;
+let unlistenScale: (() => void) | null = null;
+let disposed = false;
+let appWindow: ReturnType<typeof getCurrentWindow> | null = null;
+try {
+  appWindow = getCurrentWindow();
+} catch {
+  // 浏览器 dev / 单测：退回 devicePixelRatio
+}
+
+async function refreshScale() {
+  if (!appWindow) return;
+  try {
+    tauriScale = (await appWindow.scaleFactor()) || 1;
+  } catch {
+    tauriScale = 1;
+  }
+}
+
+async function repaintForScale() {
+  await refreshScale();
+  await nextTick();
+  paint();
+}
+
+function paint() {
+  const canvas = canvasRef.value;
+  if (!canvas) return;
+  const width = canvas.clientWidth;
+  const height = canvas.clientHeight;
+  if (width <= 0 || height <= 0) return;
+
+  const dpr = Math.max(window.devicePixelRatio || 1, tauriScale, 1);
+  canvas.width = Math.round(width * dpr);
+  canvas.height = Math.round(height * dpr);
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  // 跌行把示意数据以昨收为轴镜像，曲线方向与左侧数字一致。
+  const bars =
+    props.rising === false
+      ? sampleBars.map((bar) => ({ ...bar, close: 2 * PREV_CLOSE - bar.close }))
+      : sampleBars;
+
+  const range = resolveSparklineRange(bars, PREV_CLOSE);
+  const lastBar = bars[bars.length - 1];
+  const points = sparklineCanvasPoints(bars, range, width);
+  const dot = points[points.length - 1];
+
+  paintTickerSparkline(
+    ctx,
+    {
+      style: props.chartStyle,
+      baselineY: sparklineBaselineY(),
+      points,
+      dot: dot && lastBar ? { x: dot.x, y: dot.y, rising: lastBar.close >= PREV_CLOSE } : null,
+      width,
+      height,
+    },
+    palette(),
+    dpr,
+  );
+}
+
+const settings = useSettingsStore();
+
+onMounted(() => {
+  void repaintForScale();
+  if (appWindow) {
+    appWindow
+      .onScaleChanged(() => void repaintForScale())
+      .then((unlisten) => {
+        if (disposed) unlisten();
+        else unlistenScale = unlisten;
+      })
+      .catch(() => {
+        // 拿不到缩放事件就只按当前倍率画一次
+      });
+  }
+});
+
+onUnmounted(() => {
+  disposed = true;
+  unlistenScale?.();
+  unlistenScale = null;
+});
+// 画法变了立刻重画；主题、配色、透明切换也要重画 —— canvas 读不了 var()，
+// 只能等样式落定后重取一次调色板。
+watch(
+  [
+    () => props.chartStyle,
+    () => props.rising,
+    () => settings.theme,
+    () => settings.colorScheme,
+  ],
+  () => {
+    // mode 从 off 切回来时 canvas 这一刻还不存在（v-if 刚翻真），
+    // 直接画会拿到 null 然后什么都不发生。
+    void nextTick(paint);
+  },
+);
+</script>
+
+<template>
+  <canvas
+    ref="canvasRef"
+    class="spark-preview"
+    :style="{
+      width: `${SPARKLINE_CANVAS_WIDTH}px`,
+      height: `${SPARKLINE_CANVAS_HEIGHT}px`,
+    }"
+    aria-hidden="true"
+  ></canvas>
+</template>
+
+<style scoped>
+.spark-preview {
+  display: block;
+  flex: none;
+  /* 预览只是说明画法，不该抢走设置页的点击与滚动 */
+  pointer-events: none;
+}
+</style>

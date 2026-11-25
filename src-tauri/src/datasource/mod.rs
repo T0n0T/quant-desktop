@@ -100,15 +100,21 @@ pub const DEFAULT_INDEX_CODES: &[&str] = &[
 ];
 
 /// Ticker window default dimensions (logical pixels — keep in sync with
-/// `tauri.conf.json` → `app.windows[ticker]` and `WIDTH` in
-/// `useTickerWindowHeight.ts`).
+/// `tauri.conf.json` → `app.windows[ticker]` and `SPARKLINE_CANVAS_WIDTH`;
+/// the frontend no longer carries a width constant).
 ///
-/// The ticker's height is only a first-paint fallback: the frontend measures the
-/// real content height and calls `setSize`, so DPI scaling changes never leave
-/// the content clipped (see `useTickerWindowHeight.ts`).
+/// 宽度按内容配平：内边距 16 + 文字列 118 + 图前间距 8 + 分时图 88 = 230。
+/// 文字列（名称 / 价格 + 涨跌）吃掉剩余宽度；比上游多 10px 是留给美股盘前/
+/// 盘后 6px 副标的 —— 再窄会把长名称截断、再把涨跌条挤出右缘。
 ///
-/// Consumers needing *physical* pixels (the `outer_size()` fallbacks in
-/// `lib.rs`) must multiply by the window's `scale_factor()` — the raw value
+/// The ticker's height is only a first-launch fallback: the frontend measures the
+/// real content height, calls `set_ticker_size`, and persists it to the internal
+/// `ticker_height` setting (see `useTickerWindowHeight.ts`). Startup and
+/// `set_ticker_visible` restore that saved height before restoring the window
+/// position, so the bottom-edge anchor never mistakes a size change for a move.
+///
+/// Consumers needing *physical* pixels (e.g. `window_bounds` sizing) must
+/// multiply by the relevant monitor's `scale_factor()` — the raw value
 /// undersizes the window at DPI ≠ 100%.
 pub const TICKER_WIDTH: u32 = 230;
 pub const TICKER_HEIGHT: u32 = 40;
