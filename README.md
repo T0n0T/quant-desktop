@@ -15,7 +15,7 @@
 [![CI](https://github.com/T0n0T/quant-desktop/actions/workflows/ci.yml/badge.svg)](https://github.com/T0n0T/quant-desktop/actions/workflows/ci.yml)
 [![Downloads](https://img.shields.io/github/downloads/T0n0T/quant-desktop/total?style=flat-square)](https://github.com/T0n0T/quant-desktop/releases)
 
-[![下载最新版](https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD%E6%9C%80%E6%96%B0%E7%89%88-v1.8.1-2ea44f?style=for-the-badge)](https://github.com/T0n0T/quant-desktop/releases/latest)
+[![下载最新版](https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD%E6%9C%80%E6%96%B0%E7%89%88-v1.8.2-2ea44f?style=for-the-badge)](https://github.com/T0n0T/quant-desktop/releases/latest)
 [![Microsoft Store](https://img.shields.io/badge/Microsoft_Store-%E4%B8%8B%E8%BD%BD-00A4EF?style=for-the-badge)](https://apps.microsoft.com/detail/9P46MZZDTTZ0)
 [![加入交流群](https://img.shields.io/badge/%E5%8A%A0%E5%85%A5%E4%BA%A4%E6%B5%81%E7%BE%A4-%E5%BE%AE%E4%BF%A1-07c160?style=for-the-badge)](#-贡献与交流)
 
@@ -96,7 +96,7 @@
 
 ### 3️⃣ 自选管理，简单直接
 
-- **自选分组** —— 标签栏一键切换，双击就地重命名，右键菜单重命名 / 删除 / 上下移动 / 新建分组；同一只股票可同时属于多个分组，在每个分组里的位置各自独立
+- **自选分组** —— 标签栏一键切换，支持横向滚动与滚轮切换；双击就地重命名，右键菜单重命名 / 删除 / 上下移动 / 新建分组；同一只股票可同时属于多个分组，在每个分组里的位置各自独立
 - **列随你挑** —— 显示哪些列、列的先后顺序、默认按哪列排序，都在设置里调；点列头即可临时改排，列宽固定、数字成列对齐不跳动
 - **表格批量导入** —— 弹框里下载模板（xlsx）、选文件或直接拖入，支持 .xlsx / .xls / .csv；按代码或名称自动匹配，导入前可勾选落到哪些分组，导入后逐行显示成功 / 已存在 / 失败原因
 - 支持 A 股代码，以及港美股代码、英文名称和常见中文名称搜索；**市场标签**让同代码的指数与个股一眼可辨
@@ -114,11 +114,12 @@
 
 - 📌 **始终置顶**于所有窗口，无边框、不占任务栏
 - 🔄 每 3 秒自动轮播自选股：名称 / 现价 / 涨跌幅，每屏 1–10 只可调
+- 📈 **迷你分时线**（默认关）—— 每行右侧显示当日走势，可选「带刻度 / 纯曲线」；早盘横轴自动收窄到上午
 - 🎯 **轮播范围自定** —— 跨分组挑选播报标的、拖拽调整播报顺序，不需要的逐只关掉
 - 🇺🇸 美股盘前、盘后涨跌幅显示在常规涨跌幅下方；没有实时数据的夜盘不显示
 - 🪟 **可设为透明背景** —— 底板、圆角与阴影一并去掉，只留数字浮在桌面上
 - ⏸ 鼠标悬停自动暂停，看清楚了再走
-- 🖱 **直接拖拽**到桌面任意位置 —— 拖到哪儿，下次启动还出现在哪儿（位置自动记忆）
+- 🖱 **直接拖拽**到桌面任意位置 —— 拖到哪儿，下次启动还出现在哪儿；跨显示器/拔屏后自动钳回可见工作区；窗口尺寸可记忆并锁定
 - 🌓 深浅主题 / 跟随系统，实时同步
 - 👆 单击行情条，立即恢复主窗口
 
@@ -343,6 +344,6 @@ Windows 10 / 11、macOS（Intel + Apple Silicon）、Linux（Ubuntu 22.04+ / gli
 
 **如果 QuantDesktop 对你有用，欢迎点一个 ⭐ Star —— 这是持续开发的动力！**
 
-QuantDesktop v1.8.1 · 让看盘更安静一点
+QuantDesktop v1.8.2 · 让看盘更安静一点
 
 </div>
