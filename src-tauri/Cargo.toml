@@ -49,7 +49,7 @@ rusqlite = { version = "0.41", features = ["bundled"] }
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
 async-trait = "0.1"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "system-proxy"] }
 tdxrs = { git = "https://github.com/jiangtaovan/tdxrs.git", rev = "d07543be738015ef9ef699ddcb5f9930a5219b62" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 encoding_rs = "0.8"

@@ -56,11 +56,29 @@ impl YahooTdxAdapter {
     }
 
     fn yahoo_client(&self) -> &Client {
-        // Keep reqwest's environment proxy support so HTTPS_PROXY/HTTP_PROXY
-        // can be supplied when the desktop app is started from a shell. The
-        // app may also discover a local proxy during setup, so build lazily
-        // after that discovery has completed.
+        // Yahoo 在境内通常要走代理。reqwest 的 `system-proxy` feature 已打开：
+        // Windows 会读 HKCU 的 Internet Settings（Clash/V2Ray 的「系统代理」），
+        // macOS 读系统配置，Linux 读环境变量。除此之外 `detect_and_set_proxy`
+        // 还会探测常见本地端口并设置 env。Client 必须惰性构造 —— 它只在构建时
+        // 读取一次代理配置，早于探测就会把「直连」固化下来。
         self.yahoo.get_or_init(|| {
+            // 不打印代理 URL（可能带凭据）。Windows 上即使 env 为空，打开
+            // `system-proxy` 后 reqwest 仍会读系统代理设置。
+            let has_env_proxy = [
+                "HTTPS_PROXY",
+                "https_proxy",
+                "HTTP_PROXY",
+                "http_proxy",
+                "ALL_PROXY",
+                "all_proxy",
+            ]
+            .iter()
+            .any(|key| std::env::var_os(key).is_some());
+            log::info!(
+                "[yahoo] HTTP client built (env proxy: {}, system proxy fallback: enabled)",
+                if has_env_proxy { "set" } else { "none" }
+            );
+
             Client::builder()
                 .timeout(std::time::Duration::from_secs(15))
                 .user_agent(concat!(

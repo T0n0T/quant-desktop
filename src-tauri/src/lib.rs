@@ -842,10 +842,10 @@ pub fn run() {
                 let _ = main.set_focus();
             }
 
-            // Detect local proxy (Clash/V2Ray) for updater downloads.
-            // Store builds have no updater, so this is compiled out.
+            // Detect local proxy (Clash/V2Ray) for updater downloads and Yahoo.
+            // Store builds have no updater, but Yahoo still needs it — do not gate
+            // this on the store feature.
             // 放在 logger 之后：探测结果本身就要记日志，之前它在日志里永远是空的。
-            #[cfg(not(feature = "store"))]
             detect_and_set_proxy();
 
             // Start background polling.
@@ -996,35 +996,47 @@ pub fn run() {
         .expect("Failed to start application");
 }
 
-/// Auto-detect local proxy (Clash/V2Ray) and set env vars for updater downloads.
+/// Auto-detect a local HTTP proxy (Clash/V2Ray) and set env vars for the updater
+/// and Yahoo Finance (HK/US quotes).
+///
+/// Windows GUI 进程不会继承终端的代理环境变量；Yahoo client 依赖 reqwest 的
+/// 自动代理。Cargo.toml 里打开了 `system-proxy`，所以它还会读 Windows/macOS 的
+/// 系统代理设置；这里再补一层「本地固定端口」探测，覆盖代理只监听回环、但没有
+/// 被设为系统代理的情况。Store 构建同样需要它 —— 不要按 store feature 门控。
 ///
 /// # Safety
 ///
 /// `std::env::set_var` is NOT thread-safe per Rust's documentation. Call this only
-/// from `setup` on the main thread, and keep it BEFORE `Scheduler::spawn` and before
-/// the updater's first request (which builds its own proxy-aware client).
+/// from `setup` on the main thread, and keep it BEFORE `Scheduler::spawn`, the
+/// updater's first request, and the first Yahoo request (clients cache proxy config
+/// at build time).
 ///
 /// 共享的行情 HTTP client 用 `.no_proxy()` 构建（见 `datasource::shared_client`），
-/// 不读这些环境变量，所以把它挪到 `main.show()` 之后是安全的。不要再让行情适配器
-/// 在构造时初始化共享 client —— 那会把「代理设置」与「client 构造顺序」重新绑定。
-#[cfg(not(feature = "store"))]
+/// 不读这些环境变量；境内接口不会因为这里设置代理而绕路。
 fn detect_and_set_proxy() {
     use std::net::{SocketAddr, TcpStream};
     use std::time::Duration;
 
-    // Skip if proxy already set
+    // Skip if proxy already set. 不打印值：代理 URL 可能带用户名/密码。
+    // 只看 HTTP(S)_PROXY：ALL_PROXY 可能是 SOCKS，而当前 reqwest 没有开
+    // `socks` feature；让它参与「已设置」判断会让探测直接放弃补 HTTP 代理。
     if std::env::var("HTTPS_PROXY").is_ok()
         || std::env::var("HTTP_PROXY").is_ok()
         || std::env::var("https_proxy").is_ok()
         || std::env::var("http_proxy").is_ok()
     {
+        log::info!("[proxy] environment proxy already set, detection skipped");
         return;
     }
 
     // 端口按优先级排列。**并行**探测：逐个 connect_timeout 在「端口被防火墙静默
-    // 丢弃」的机器上每个都要等满超时 —— 实测 Win10 无代理时 7 个端口串起来是 8 秒。
+    // 丢弃」的机器上每个都要等满超时 —— 实测 Win10 无代理时逐个串起来是 8 秒。
     // 本地回环上有代理时连接是毫秒级的，150ms 足够区分。
-    const PORTS: [u16; 7] = [7890, 10809, 10808, 7891, 1080, 8118, 8080];
+    //
+    // 只列**HTTP/mixed** 端口：1080 / 10808 / 7891 是常见 SOCKS 端口，写成
+    // `http://127.0.0.1:<port>` 会让请求连上却不按 HTTP 代理应答。要做 SOCKS
+    // 支持得同时打开 reqwest 的 `socks` feature 并写 `ALL_PROXY=socks5h://...`。
+    const PORTS: [u16; 6] = [7890, 7897, 10809, 8118, 8080, 8888];
     let detected = std::thread::scope(|scope| {
         let handles: Vec<_> = PORTS
             .iter()
