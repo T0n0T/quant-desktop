@@ -1,4 +1,5 @@
 use tauri::Manager;
+use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::State;
 use std::sync::Arc;
 use crate::db::Database;
@@ -14,6 +15,24 @@ pub fn show_main_window(app: tauri::AppHandle) -> Result<(), String> {
         log::warn!("[window] show_main_window failed: {}", e);
         e
     })
+}
+
+/// Show the native context menu for the compact ticker window.
+#[tauri::command]
+pub fn show_ticker_context_menu(app: tauri::AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("ticker")
+        .ok_or_else(|| "Ticker window not found".to_string())?;
+    let style = MenuItemBuilder::with_id("ticker_toggle_style", "切换行情条样式").build(&app)
+        .map_err(|e| e.to_string())?;
+    let hide = MenuItemBuilder::with_id("ticker_hide", "隐藏行情条").build(&app)
+        .map_err(|e| e.to_string())?;
+    let menu = MenuBuilder::new(&app)
+        .item(&style)
+        .item(&hide)
+        .build()
+        .map_err(|e| e.to_string())?;
+    window.popup_menu(&menu).map_err(|e| e.to_string())
 }
 
 /// 显示/隐藏行情条窗口(设置页「显示行情条」开关)。

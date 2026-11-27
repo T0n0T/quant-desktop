@@ -106,6 +106,16 @@ onUnmounted(() => {
   if (unlistenSettings) unlistenSettings();
 });
 
+async function handleContextMenu(event: MouseEvent) {
+  event.preventDefault();
+  event.stopPropagation();
+  try {
+    await invoke('show_ticker_context_menu');
+  } catch (e) {
+    console.error('[TickerBar] show context menu failed:', e);
+  }
+}
+
 function startWatchlistListener() {
   listen('watchlist-changed', () => {
     watchlist.fetchWatchlist().catch((e) => {
@@ -367,6 +377,7 @@ async function handleClick(event: MouseEvent | KeyboardEvent) {
     @keydown.enter="handleClick"
     @keydown.space.prevent="handleClick"
     @mousedown="onMouseDown"
+    @contextmenu="handleContextMenu"
     @mouseenter="paused = true"
     @mouseleave="paused = false"
     @click="handleClick"
@@ -450,6 +461,7 @@ async function handleClick(event: MouseEvent | KeyboardEvent) {
         {{ watchlist.items.length === 0 ? '暂无自选' : '暂未设置播报标的' }}
       </div>
     </div>
+
   </div>
 </template>
 

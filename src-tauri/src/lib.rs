@@ -605,6 +605,23 @@ pub fn run() {
                                 log::warn!("Failed to toggle ticker window: {}", e);
                             }
                         }
+                        "ticker_toggle_style" => {
+                            let current = db.get_setting(keys::TICKER_TRANSPARENT).ok().flatten();
+                            let value = if current.as_deref() == Some("1") { "0" } else { "1" };
+                            if let Err(e) = db.set_setting(keys::TICKER_TRANSPARENT, value) {
+                                log::warn!("Failed to toggle ticker style: {}", e);
+                            } else {
+                                events::emit_or_warn(app, "settings-changed", serde_json::json!({
+                                    "key": keys::TICKER_TRANSPARENT,
+                                    "value": value,
+                                }));
+                            }
+                        }
+                        "ticker_hide" => {
+                            if let Err(e) = set_ticker_visible(app, &db, false) {
+                                log::warn!("Failed to hide ticker window: {}", e);
+                            }
+                        }
                         #[cfg(not(feature = "store"))]
                         "check_update" => {
                             // Portable mode: the "check update" tray item is hidden,
@@ -985,6 +1002,7 @@ pub fn run() {
             commands::market::get_overview_interval,
             commands::window::show_main_window,
             commands::window::set_ticker_visible,
+            commands::window::show_ticker_context_menu,
             commands::window::set_ticker_size,
             commands::window::set_window_theme,
             commands::updater::check_update,
